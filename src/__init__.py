@@ -1,0 +1,1 @@
+"""FreshPrice source package."""

@@ -1,0 +1,1 @@
+"""FreshPrice test suite."""
