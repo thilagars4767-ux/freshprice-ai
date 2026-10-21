@@ -1,0 +1,5 @@
+elasticity_scenario,elasticity_magnitude,units_sold,unsold_units,waste_rate_pct,waste_reduction_vs_fixed_pct,revenue,cogs,gross_profit,waste_loss,net_profit,profit_diff_vs_fixed
+0.5 (Inelastic),0.5,5560.4,60.6,1.08,0.0,463182.46,352543.11,110639.35,3319.62,107319.73,0.0
+1.0 (Unitary Elastic),1.0,5560.4,60.6,1.08,0.0,463182.46,352543.11,110639.35,3319.62,107319.73,0.0
+1.5 (Elastic),1.5,5607.06,13.94,0.25,77.0,463839.38,355134.68,108704.7,728.05,107976.65,656.92
+2.0 (Highly Elastic),2.0,5616.44,4.56,0.08,92.48,464564.57,355622.93,108941.64,239.8,108701.84,1382.11

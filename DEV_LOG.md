@@ -1,31 +1,35 @@
 # FreshPrice - Development Log
 
-## Milestone 2.1: Financial Accounting Audit & Reconciled P&L
+## Milestone 3: Performance Evaluation & Sensitivity Analysis (Phase 3)
 - **Date**: 2026-10-22
 - **Status**: Completed & Verified.
-- **Audit Findings & Key Fixes**:
-  - **Clarified Accounting Identities**:
-    - `Revenue = Units Sold * Selling Price`
-    - `COGS = Units Sold * Unit Cost`
-    - `Gross Profit = Revenue - COGS`
-    - `Waste Loss = Unsold Units * Unit Cost`
-    - `Total Initial Inventory Cost = COGS + Waste Loss`
-    - `Net Retail Profit = Gross Profit - Waste Loss = Revenue - Total Initial Inventory Cost`
-  - **Resolution of Negative Reported Profit with Positive Selling Margins**:
-    - Dissected why batches like Garlic Herb Baguette (`selling_price ₹51.36 > unit_cost ₹50.30`) and Toned Fresh Milk (`selling_price ₹58.90 > unit_cost ₹52.95`) report negative Net Retail Profit.
-    - Verified that in both cases, the **Gross Profit on sold units is positive**, but **Waste Loss on unsold expired inventory exceeds Gross Profit**.
-    - Verified that Dynamic Pricing actually **reduced batch losses** (Garlic Herb Baguette loss reduced from -₹150.73 to -₹74.26; Toned Fresh Milk loss reduced from -₹753.90 to -₹744.72).
-  - **Candidate Discount Optimization**:
-    - Added $d_{\text{clearance}}$ to candidate discounts to ensure optimal clearance when stock surplus is small (e.g. Butter Croissant now completely clears 0.40 units of waste and increases profit from ₹695.94 to ₹713.80).
-    - Verified that markdown profitability strictly checks that dynamic net profit $\ge$ baseline net profit.
-  - **CLI Report Overhaul**:
-    - Replaced the single `profit` column with explicit columns: `gross_profit`, `waste_loss`, and `net_profit`.
-    - Added structured financial P&L statement to the summary report.
-    - Removed non-encodable unicode characters for 100% Windows CLI compatibility.
-  - **Expanded Automated Tests (24 tests total)**:
-    - Added `test_financial_accounting_identities` (verifies all 5 identities hold per batch).
-    - Added `test_positive_margin_with_negative_net_profit_audit` (proves that negative net profit with positive margin occurs precisely when `waste_loss > gross_profit`).
-    - Added `test_markdown_profitability_guarantee` (proves dynamic pricing never applies a discount resulting in lower net profit than baseline).
-    - Added `test_aggregate_financial_reconciliation` (proves summary table totals match sum of batch rows).
+- **Components Implemented**:
+  - `src/performance_analysis.py`:
+    - `evaluate_category_performance`: Compares fixed vs dynamic pricing across all 5 grocery categories with safe zero-denominator handling and reconciled accounting identities.
+    - `evaluate_discount_sensitivity`: Benchmarks maximum discount cap thresholds (10%, 20%, 30%, 35%) against the fixed-price baseline.
+    - `evaluate_elasticity_sensitivity`: Evaluates assumed consumer price elasticity scenarios (0.5, 1.0, 1.5, 2.0) with controlled scenario overrides while preserving baseline assumptions.
+    - `generate_charts`: Produces high-resolution visualization charts using headless `matplotlib` (`reports/category_waste_and_profit.png` and `reports/sensitivity_analysis.png`).
+    - `generate_markdown_report`: Produces a comprehensive, reproducible Markdown audit report (`reports/phase3_performance_report.md`).
+    - `run_phase3_analysis`: Orchestrates data generation, sensitivity analysis, report writing, and chart plotting.
+  - `data/` Deliverables:
+    - `data/category_performance_summary.csv`
+    - `data/discount_sensitivity_summary.csv`
+    - `data/elasticity_sensitivity_summary.csv`
+  - `reports/` Deliverables:
+    - `reports/phase3_performance_report.md`
+    - `reports/category_waste_and_profit.png`
+    - `reports/sensitivity_analysis.png`
+  - `tests/test_performance_analysis.py`: 9 comprehensive automated tests:
+    - Representation of all 5 categories.
+    - Coverage of all requested discount caps (10%, 20%, 30%, 35%).
+    - Coverage of all requested elasticity scenarios (0.5, 1.0, 1.5, 2.0).
+    - Validation of required columns in all 3 output CSVs.
+    - Safe percentage-change calculation handling zero baselines.
+    - Waste rate and waste reduction formula validation.
+    - Financial accounting identities verification across all summaries.
+    - Deterministic reproducibility check (`assert_frame_equal`).
+    - Integration test validating that `run_phase3_analysis` produces all deliverables.
+  - `requirements.txt`: Added `matplotlib>=3.7.0`.
+  - `README.md`: Documented Phase 3 features, sensitivity findings, execution commands, and assumptions.
 - **Verification**:
-  - 24/24 tests passed cleanly via `py -m pytest tests -v`.
+  - 33/33 tests passed cleanly across all test suites via `py -m pytest tests -v`.

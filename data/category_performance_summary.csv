@@ -1,0 +1,6 @@
+category,batch_count,initial_stock,fixed_units_sold,dynamic_units_sold,fixed_unsold_units,dynamic_unsold_units,fixed_waste_rate_pct,dynamic_waste_rate_pct,waste_reduction_pct,fixed_revenue,dynamic_revenue,fixed_gross_profit,dynamic_gross_profit,fixed_waste_loss,dynamic_waste_loss,fixed_net_profit,dynamic_net_profit,net_profit_diff
+bakery,24,821,811.4,819.1,9.6,1.9,1.17,0.23,80.21,42891.43,43007.55,11232.91,10965.45,479.15,95.57,10753.76,10869.88,116.12
+dairy,24,1163,1112.0,1126.48,51.0,36.52,4.39,3.14,28.39,99536.26,99591.75,16505.31,15760.75,2840.47,2040.42,13664.84,13720.33,55.49
+fruits,24,999,999.0,999.0,0.0,0.0,0.0,0.0,0.0,119631.5,119631.5,33417.11,33417.11,0.0,0.0,33417.11,33417.11,0.0
+packaged food,24,1094,1094.0,1094.0,0.0,0.0,0.0,0.0,0.0,142279.9,142279.9,30804.32,30804.32,0.0,0.0,30804.32,30804.32,0.0
+vegetables,24,1544,1544.0,1544.0,0.0,0.0,0.0,0.0,0.0,58843.37,58843.37,18679.7,18679.7,0.0,0.0,18679.7,18679.7,0.0

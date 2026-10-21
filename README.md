@@ -12,20 +12,29 @@ FreshPrice is an intelligent dynamic pricing and markdown optimization system de
 freshprice/
 ├── data/
 │   ├── .gitkeep
-│   └── synthetic_grocery_inventory.csv   # Phase 1: 120 Indian grocery batches (INR)
+│   ├── synthetic_grocery_inventory.csv     # Phase 1: 120 Indian grocery batches (INR)
+│   ├── category_performance_summary.csv    # Phase 3: Category-level comparison
+│   ├── discount_sensitivity_summary.csv    # Phase 3: Discount cap sensitivity (10-35%)
+│   └── elasticity_sensitivity_summary.csv  # Phase 3: Elasticity sensitivity (0.5-2.0)
+├── reports/
+│   ├── phase3_performance_report.md        # Phase 3: Full evaluation report
+│   ├── category_waste_and_profit.png       # Phase 3: Category waste & profit charts
+│   └── sensitivity_analysis.png            # Phase 3: Sensitivity curve charts
 ├── src/
 │   ├── __init__.py
-│   ├── data_generator.py                 # Phase 1: Synthetic Indian grocery generator
-│   └── pricing_engine.py                 # Phase 2: Dynamic pricing engine & simulator
+│   ├── data_generator.py                   # Phase 1: Synthetic Indian grocery generator
+│   ├── pricing_engine.py                   # Phase 2: Dynamic pricing engine & simulator
+│   └── performance_analysis.py             # Phase 3: Evaluation & sensitivity module
 ├── tests/
 │   ├── __init__.py
-│   ├── test_data_generator.py            # Phase 1: Test suite (9 tests)
-│   └── test_pricing_engine.py            # Phase 2: Test suite (15 tests)
-├── app.py                                # Application entrypoint
-├── requirements.txt                      # Project dependencies
-├── README.md                             # Documentation & instructions
-├── DEV_LOG.md                            # Development progress log
-└── .gitignore                            # Git ignore configuration
+│   ├── test_data_generator.py              # Phase 1: Test suite (9 tests)
+│   ├── test_pricing_engine.py              # Phase 2: Test suite (15 tests)
+│   └── test_performance_analysis.py        # Phase 3: Test suite (9 tests)
+├── app.py                                  # Application entrypoint
+├── requirements.txt                        # Project dependencies
+├── README.md                               # Documentation & instructions
+├── DEV_LOG.md                              # Development progress log
+└── .gitignore                              # Git ignore configuration
 ```
 
 ---
@@ -71,28 +80,7 @@ Where:
 - $d$ = Discount fraction ($0 \le d \le d_{\max}$).
 - $Q_{\text{dyn}}$ = Stimulated daily demand.
 
-### 2. Discount Recommendation Policy
-
-Discounts are determined based on inventory coverage and shelf-life urgency:
-
-1. **Inventory Coverage Ratio**:
-   $$\text{Coverage Ratio} = \frac{\text{initial\_stock}}{\max(\text{daily\_demand} \times \text{days\_to\_expiry}, 0.001)}$$
-   - If $\text{Coverage Ratio} \le 1.0$: Baseline demand clears the stock before expiry. No discount is required unless expiry is imminent (1–2 days remaining).
-   - If $\text{Coverage Ratio} > 1.0$: Surplus inventory will spoil. The required clearance discount is:
-     $$d_{\text{clearance}} = \frac{\text{Coverage Ratio} - 1}{|E_d|}$$
-
-2. **Expiry Urgency Component**:
-   Discounts scale upwards as expiry approaches:
-   - $\le 1$ day remaining: 20% baseline urgency discount.
-   - $\le 2$ days remaining: 10% baseline urgency discount.
-   - $\le 3$ days remaining: 5% baseline urgency discount.
-
-3. **Strict Price Floor & Profitability Constraints**:
-   - **Cost Floor**: Selling price is **never recommended below unit cost** ($P_{\text{recommended}} \ge \text{unit\_cost}$).
-   - **Max Discount Cap**: Configurable ceiling (default $d_{\max} = 40\%$).
-   - **Profitability Guarantee**: The engine checks whether candidate markdowns produce higher net profit than the baseline under identical inventory and cost assumptions. If a discount would reduce net profit, the engine **retains the regular price** and reports that limitation.
-
-### 3. Financial & Retail Accounting Identities
+### 2. Financial & Retail Accounting Identities
 
 All batch-level and aggregate financial metrics reconcile mathematically according to standard retail accounting:
 
@@ -110,24 +98,50 @@ $$\text{Net Retail Profit} = \text{Revenue} - \text{Total Initial Inventory Cost
 
 $$\text{Waste Rate (\%)} = \frac{\text{Total Unsold Units}}{\text{Total Initial Stock}} \times 100\%$$
 
-### 4. Accounting Audit: Why Batches with Positive Selling Margins Show Negative Net Profit
+---
 
-A critical retail insight verified during auditing:
-- A batch can have a **positive gross margin** ($\text{selling\_price} > \text{unit\_cost}$) on the units sold, but still yield a **negative net profit** for the batch overall.
-- **Root Cause**: When a batch has substantial surplus stock that cannot be sold within its remaining shelf life, the expired stock must be written off as **Waste Loss**. If $\text{Waste Loss} > \text{Gross Profit}$, then:
-  $$\text{Net Retail Profit} = \text{Gross Profit} - \text{Waste Loss} < 0$$
-- **Example (Toned Fresh Milk - PROD-0101)**:
-  - 114 litres purchased at ₹52.95/litre (Total Cost: ₹6,036.30).
-  - 89.84 litres sold at ₹58.90/litre (Selling margin: +₹5.95/litre).
-  - **Gross Profit**: ₹534.55 (Positive margin on sold units).
-  - **Waste Loss**: 24.16 expired litres × ₹52.95 = ₹1,279.27.
-  - **Net Retail Profit**: ₹534.55 − ₹1,279.27 = **-₹744.72**.
-  - **Fixed Baseline Comparison**: Under fixed pricing (no discount), 28.80 litres expired, resulting in a **Net Profit of -₹753.90**.
-  - **Verdict**: Dynamic pricing mitigated the loss by **+₹9.18** and saved 4.64 litres of milk from waste, but could not eliminate the underlying loss caused by severe initial overstocking.
+## Phase 3: Performance Evaluation & Sensitivity Analysis
 
-### 5. Deterministic Continuous Expectation (Fractional Units)
+Phase 3 provides comprehensive benchmarking, sensitivity analysis, and empirical simulation findings across product categories, discount ceilings, and consumer price elasticity scenarios.
 
-In this deterministic simulation, daily demand represents a continuous average rate. Consequently, `units_sold` and `unsold_units` are continuous expected values (e.g. 20.10 loaves, 89.84 litres) rather than discrete stochastic integer draws. This maintains exact mathematical reproducibility while preserving analytical precision.
+### 1. Feature 1: Category-Level Performance Evaluation
+
+| Category | Batches | Initial Stock | Fixed Waste | Dynamic Waste | Waste Red. (%) | Fixed Net Profit (INR) | Dynamic Net Profit (INR) | Profit Gain (INR) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Bakery** | 24 | 821 | 9.60 | 1.90 | **80.21%** | ₹10,753.76 | ₹10,869.88 | **+₹116.12** |
+| **Dairy** | 24 | 1,163 | 51.00 | 36.52 | **28.39%** | ₹13,664.84 | ₹13,720.33 | **+₹55.49** |
+| **Fruits** | 24 | 999 | 0.00 | 0.00 | 0.00% | ₹33,417.11 | ₹33,417.11 | +₹0.00 |
+| **Vegetables** | 24 | 1,544 | 0.00 | 0.00 | 0.00% | ₹18,679.70 | ₹18,679.70 | +₹0.00 |
+| **Packaged Food** | 24 | 1,094 | 0.00 | 0.00 | 0.00% | ₹30,804.32 | ₹30,804.32 | +₹0.00 |
+
+- **Highest Waste Reduction (%)**: **Bakery** at **80.21%**, due to fast turnover and responsive price elasticity.
+- **Highest Volume Saved**: **Dairy** with **14.48 units** rescued from spoilage.
+- **Zero-Waste Categories**: In categories where baseline demand naturally clears stock before expiry, the pricing engine applies a 0% discount, strictly protecting regular prices and avoiding unnecessary margin loss.
+
+### 2. Feature 2: Maximum-Discount Sensitivity (10% to 35%)
+
+| Discount Setting | Units Sold | Unsold (Waste) | Waste Rate (%) | Waste Red. vs Fixed (%) | Total Revenue (INR) | Net Retail Profit (INR) | Profit Gain vs Fixed (INR) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Fixed (0%)** | 5,560.40 | 60.60 | 1.08% | 0.00% | ₹463,182.46 | ₹107,319.73 | +0.00 |
+| **10% Cap** | 5,579.40 | 41.60 | 0.74% | 31.35% | ₹463,332.53 | ₹107,469.80 | +₹150.07 |
+| **20% Cap** | 5,581.92 | 39.08 | 0.70% | 35.51% | ₹463,353.99 | ₹107,491.26 | +₹171.53 |
+| **30% Cap** | 5,582.58 | 38.42 | 0.68% | **36.60%** | ₹463,354.07 | ₹107,491.34 | **+₹171.61** |
+| **35% Cap** | 5,582.58 | 38.42 | 0.68% | **36.60%** | ₹463,354.07 | ₹107,491.34 | **+₹171.61** |
+
+- **Optimal Setting**: Under the synthetic catalog assumptions, **30%** achieves the maximum possible benefit.
+- **Plateau Behavior**: Relaxing the cap to 35% yields identical results because wholesale cost floor boundaries ($P \ge \text{unit\_cost}$) and calculated clearance needs never exceed 22.6% for any batch in the current inventory.
+
+### 3. Feature 3: Price-Elasticity Sensitivity (0.5 to 2.0)
+
+| Assumed Elasticity (|Ed|) | Scenario Label | Waste Rate (%) | Waste Red. vs Fixed (%) | Net Retail Profit (INR) | Profit Gain vs Fixed (INR) | Strategy Behavior |
+| :---: | :--- | :---: | :---: | :---: | :---: | :--- |
+| **0.5** | Inelastic | 1.08% | 0.00% | ₹107,319.73 | +₹0.00 | Profitability rule holds regular price (markdowns avoided) |
+| **1.0** | Unitary Elastic | 1.08% | 0.00% | ₹107,319.73 | +₹0.00 | Regular price held (demand increase cannot offset cost margin) |
+| **1.5** | Elastic | 0.25% | **77.00%** | ₹107,976.65 | **+₹656.92** | Dynamic markdowns actively clear excess inventory |
+| **2.0** | Highly Elastic | 0.08% | **92.48%** | ₹108,701.84 | **+₹1,382.11** | Near-total elimination of perishable food waste |
+
+- **Inelastic Scenarios ($|E_d| \le 1.0$)**: When demand does not respond sufficiently to price cuts, discounting destroys cash margin without clearing enough stock. FreshPrice AI protects the retailer by **holding regular prices**.
+- **Elastic Scenarios ($|E_d| \ge 1.5$)**: Markdown pricing achieves dramatic waste reduction (up to 92.48%) while simultaneously driving significant profit growth.
 
 ---
 
@@ -159,21 +173,31 @@ py src/data_generator.py
 
 ### 3. Running Phase 2 (Pricing Engine Simulation)
 
-Run the pricing engine to evaluate the dataset and print the full comparison report:
+Run the pricing engine simulation and print the comparison report:
 
 ```bash
 py src/pricing_engine.py
 ```
 
-Optional CLI arguments:
+### 4. Running Phase 3 (Performance Evaluation & Sensitivity Analysis)
+
+Execute the full Phase 3 performance evaluation, sensitivity analysis, and chart generation:
+
 ```bash
-# Run with custom max discount cap (e.g. 35%) and export comparison summary to CSV:
-py src/pricing_engine.py --max-discount 0.35 --output-summary data/pricing_comparison_summary.csv
+py src/performance_analysis.py
 ```
 
-### 4. Running the Complete Test Suite
+Generated outputs:
+- `data/category_performance_summary.csv`
+- `data/discount_sensitivity_summary.csv`
+- `data/elasticity_sensitivity_summary.csv`
+- `reports/phase3_performance_report.md`
+- `reports/category_waste_and_profit.png`
+- `reports/sensitivity_analysis.png`
 
-Run pytest across all Phase 1 and Phase 2 test suites (24 tests):
+### 5. Running the Complete Test Suite
+
+Run pytest across all Phase 1, Phase 2, and Phase 3 test suites (33 tests):
 
 ```bash
 py -m pytest tests -v
