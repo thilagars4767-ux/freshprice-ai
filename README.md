@@ -1,3 +1,4 @@
+HEAD
 # FreshPrice
 
 FreshPrice is a pricing intelligence and management system.
@@ -47,3 +48,6 @@ python app.py
 ```bash
 pytest
 ```
+# freshprice-ai
+Near-expiry grocery pricing and food waste reduction simulator
+54ed8a9fed8a194bfe66c350cc90455aacf950b3
