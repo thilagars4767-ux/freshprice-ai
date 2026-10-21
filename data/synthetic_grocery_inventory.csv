@@ -1,0 +1,121 @@
+product_id,product_name,category,unit,initial_stock,unit_cost,regular_price,days_to_expiry,daily_demand,price_elasticity
+PROD-0001,Toned Fresh Milk,dairy,per litre,109,53.1,60.27,3,49.4,-1.26
+PROD-0002,White Sandwich Bread,bakery,per loaf,53,31.9,43.52,5,23.2,-1.53
+PROD-0003,Royal Gala Apples,fruits,per kilogram,54,129.27,186.02,13,31.5,-1.61
+PROD-0004,Table Potatoes (Aloo),vegetables,per kilogram,65,19.14,27.96,24,72.2,-0.95
+PROD-0005,Royal Daawat Basmati Rice,packaged food,per kilogram,89,110.16,142.78,96,32.9,-0.95
+PROD-0006,Full Cream Fresh Milk,dairy,per litre,33,62.78,70.82,3,24.6,-0.93
+PROD-0007,Whole Wheat Atta Bread,bakery,per loaf,30,40.47,54.89,4,22.4,-1.44
+PROD-0008,Shimla Red Delicious Apples,fruits,per kilogram,54,109.74,144.8,12,23.0,-1.4
+PROD-0009,Red Cooking Onions (Pyaz),vegetables,per kilogram,113,29.06,42.86,18,44.1,-0.87
+PROD-0010,Premium Sona Masoori Rice,packaged food,per kilogram,60,54.44,68.53,171,40.5,-1.14
+PROD-0011,Fresh Curd / Dahi,dairy,per 500 g pack,61,31.0,37.23,8,31.6,-1.15
+PROD-0012,Multigrain Brown Bread,bakery,per loaf,29,50.47,67.38,4,12.1,-1.83
+PROD-0013,Robusta Cavendish Bananas,fruits,per dozen,66,43.35,62.61,6,51.8,-1.62
+PROD-0014,Hybrid Tomatoes (Tamatar),vegetables,per kilogram,61,26.43,39.96,7,26.2,-1.54
+PROD-0015,Durum Wheat Spaghetti Pasta,packaged food,per 500 g pack,54,71.0,94.94,180,13.5,-1.57
+PROD-0016,Malai Paneer,dairy,per 200 g pack,47,80.25,98.66,6,21.1,-1.21
+PROD-0017,Ladi Pav,bakery,per 6-piece pack,67,21.32,29.02,3,30.8,-2.08
+PROD-0018,Nagpur Mandarin Oranges,fruits,per kilogram,43,56.35,82.18,9,18.2,-1.57
+PROD-0019,Fresh White Cauliflower,vegetables,per head,45,23.22,36.9,5,24.5,-1.79
+PROD-0020,Whole Wheat Chakki Atta,packaged food,per 5 kg bag,29,225.76,272.93,118,18.0,-0.72
+PROD-0021,Salted Table Butter,dairy,per 500 g pack,23,250.45,291.02,57,19.6,-0.95
+PROD-0022,Brioche Burger Buns,bakery,per 4-piece pack,22,32.3,42.26,5,11.4,-1.36
+PROD-0023,Ruby Pomegranate (Anar),fruits,per kilogram,31,148.67,197.78,11,18.7,-1.6
+PROD-0024,Green Cabbage (Patta Gobhi),vegetables,per head,54,21.14,33.86,7,23.6,-1.49
+PROD-0025,Unpolished Toor Dal (Arhar),packaged food,per kilogram,28,147.93,187.13,147,23.3,-1.18
+PROD-0026,Pure Cow Ghee,dairy,per 500 ml jar,13,329.82,386.91,150,6.0,-0.96
+PROD-0027,Crispy Wheat Rusks (Toast),bakery,per 300 g pack,38,36.19,49.59,60,18.2,-1.13
+PROD-0028,Striped Watermelon,fruits,per piece,34,42.3,67.33,7,26.1,-2.14
+PROD-0029,Baby Spinach (Palak),vegetables,per 250 g bunch,77,13.95,21.94,3,37.2,-1.84
+PROD-0030,Kachi Ghani Mustard Oil,packaged food,per 1 litre bottle,41,142.54,175.77,139,19.9,-1.19
+PROD-0031,Processed Cheese Cubes,dairy,per 200 g pack,20,122.39,157.84,63,15.8,-1.45
+PROD-0032,Fruit Cake Slice Pack,bakery,per 250 g pack,32,58.72,77.47,18,16.7,-1.28
+PROD-0033,Green Seedless Grapes (Nashik),fruits,per 500 g pack,28,46.4,69.02,7,12.7,-1.71
+PROD-0034,Green Capsicum (Shimla Mirch),vegetables,per 500 g pack,49,30.97,47.21,6,17.7,-1.23
+PROD-0035,Refined Sunflower Cooking Oil,packaged food,per 1 litre pouch,43,122.07,149.07,172,43.3,-1.13
+PROD-0036,Greek Style Yogurt,dairy,per 500 g pack,35,75.58,96.48,14,16.6,-1.35
+PROD-0037,Butter Croissant,bakery,per 2-piece pack,20,76.58,113.65,2,9.8,-1.68
+PROD-0038,Semi-Ripe Papaya,fruits,per kilogram,28,31.29,46.14,6,29.9,-1.83
+PROD-0039,Red Carrots (Gajar),vegetables,per kilogram,30,39.37,55.05,7,31.6,-1.52
+PROD-0040,Instant Rolled Breakfast Oats,packaged food,per 500 g pack,46,84.51,114.25,155,10.8,-1.24
+PROD-0041,Spiced Buttermilk (Chaas),dairy,per 500 ml pouch,55,14.33,19.31,4,24.3,-1.59
+PROD-0042,Garlic Herb Baguette,bakery,per loaf,22,50.3,66.38,2,7.2,-1.75
+PROD-0043,Ratnagiri Alphonso Mangoes,fruits,per kilogram,22,244.71,339.45,6,26.1,-1.37
+PROD-0044,English Cucumber,vegetables,per 500 g pack,29,23.17,33.05,5,33.6,-1.72
+PROD-0045,Natural Creamy Peanut Butter,packaged food,per 500 g jar,31,152.52,205.66,136,17.5,-1.36
+PROD-0046,Fresh Dairy Cream,dairy,per 250 ml pack,25,64.32,76.06,19,13.6,-1.35
+PROD-0047,Sweet Cinnamon Swirl Buns,bakery,per 2-piece pack,32,41.4,56.42,2,15.2,-1.39
+PROD-0048,Mosambi (Sweet Lime),fruits,per kilogram,48,63.26,89.84,9,12.3,-1.73
+PROD-0049,Fresh Button Mushrooms,vegetables,per 200 g pack,22,46.29,65.71,4,18.0,-1.61
+PROD-0050,Tata Iodized Salt,packaged food,per 1 kg pack,65,22.47,28.32,137,38.1,-0.65
+PROD-0051,Toned Fresh Milk,dairy,per litre,76,52.61,61.52,2,33.7,-1.21
+PROD-0052,White Sandwich Bread,bakery,per loaf,28,30.98,42.52,5,21.7,-1.44
+PROD-0053,Royal Gala Apples,fruits,per kilogram,39,123.65,176.04,9,17.9,-1.3
+PROD-0054,Table Potatoes (Aloo),vegetables,per kilogram,73,18.83,26.49,20,40.2,-1.19
+PROD-0055,Royal Daawat Basmati Rice,packaged food,per kilogram,33,96.11,122.32,165,26.8,-0.99
+PROD-0056,Full Cream Fresh Milk,dairy,per litre,65,63.57,71.14,4,46.3,-0.86
+PROD-0057,Whole Wheat Atta Bread,bakery,per loaf,27,36.26,46.05,5,20.0,-1.39
+PROD-0058,Shimla Red Delicious Apples,fruits,per kilogram,49,115.41,150.89,7,29.5,-1.74
+PROD-0059,Red Cooking Onions (Pyaz),vegetables,per kilogram,134,31.83,43.22,16,34.5,-0.86
+PROD-0060,Premium Sona Masoori Rice,packaged food,per kilogram,96,55.22,72.78,119,43.4,-0.94
+PROD-0061,Fresh Curd / Dahi,dairy,per 500 g pack,49,33.89,41.22,9,27.9,-1.07
+PROD-0062,Multigrain Brown Bread,bakery,per loaf,31,48.24,63.98,5,14.0,-1.82
+PROD-0063,Robusta Cavendish Bananas,fruits,per dozen,48,41.82,59.94,5,37.9,-1.83
+PROD-0064,Hybrid Tomatoes (Tamatar),vegetables,per kilogram,88,24.62,36.34,4,36.9,-1.23
+PROD-0065,Durum Wheat Spaghetti Pasta,packaged food,per 500 g pack,33,80.83,108.9,160,18.0,-1.13
+PROD-0066,Malai Paneer,dairy,per 200 g pack,41,83.22,106.56,6,22.7,-1.46
+PROD-0067,Ladi Pav,bakery,per 6-piece pack,61,21.67,28.83,3,55.1,-2.01
+PROD-0068,Nagpur Mandarin Oranges,fruits,per kilogram,54,64.22,87.61,8,16.7,-1.29
+PROD-0069,Fresh White Cauliflower,vegetables,per head,61,23.1,37.93,4,29.8,-1.45
+PROD-0070,Whole Wheat Chakki Atta,packaged food,per 5 kg bag,36,229.88,288.66,65,29.8,-1.06
+PROD-0071,Salted Table Butter,dairy,per 500 g pack,32,245.47,277.45,37,14.9,-1.09
+PROD-0072,Brioche Burger Buns,bakery,per 4-piece pack,35,31.14,42.02,5,17.4,-1.54
+PROD-0073,Ruby Pomegranate (Anar),fruits,per kilogram,24,162.94,214.75,11,11.3,-1.34
+PROD-0074,Green Cabbage (Patta Gobhi),vegetables,per head,52,18.51,29.71,6,21.7,-1.32
+PROD-0075,Unpolished Toor Dal (Arhar),packaged food,per kilogram,41,150.96,185.24,162,21.3,-1.14
+PROD-0076,Pure Cow Ghee,dairy,per 500 ml jar,21,319.43,388.28,140,8.8,-0.91
+PROD-0077,Crispy Wheat Rusks (Toast),bakery,per 300 g pack,44,38.87,53.32,41,20.6,-1.23
+PROD-0078,Striped Watermelon,fruits,per piece,49,54.83,84.63,9,14.1,-1.56
+PROD-0079,Baby Spinach (Palak),vegetables,per 250 g bunch,60,14.55,21.54,3,40.6,-2.19
+PROD-0080,Kachi Ghani Mustard Oil,packaged food,per 1 litre bottle,32,145.72,186.89,129,20.3,-1.0
+PROD-0081,Processed Cheese Cubes,dairy,per 200 g pack,43,114.53,147.95,75,9.5,-1.0
+PROD-0082,Fruit Cake Slice Pack,bakery,per 250 g pack,36,60.79,80.23,27,9.3,-1.15
+PROD-0083,Green Seedless Grapes (Nashik),fruits,per 500 g pack,23,53.65,77.66,6,28.1,-2.08
+PROD-0084,Green Capsicum (Shimla Mirch),vegetables,per 500 g pack,47,29.93,42.54,8,15.6,-1.25
+PROD-0085,Refined Sunflower Cooking Oil,packaged food,per 1 litre pouch,30,127.19,150.45,90,19.4,-0.93
+PROD-0086,Greek Style Yogurt,dairy,per 500 g pack,32,85.42,106.86,9,5.7,-1.32
+PROD-0087,Butter Croissant,bakery,per 2-piece pack,24,77.06,112.96,3,16.1,-2.27
+PROD-0088,Semi-Ripe Papaya,fruits,per kilogram,43,27.61,39.34,5,29.9,-1.59
+PROD-0089,Red Carrots (Gajar),vegetables,per kilogram,55,38.51,53.18,13,18.9,-1.45
+PROD-0090,Instant Rolled Breakfast Oats,packaged food,per 500 g pack,37,91.94,128.5,158,8.8,-1.09
+PROD-0091,Spiced Buttermilk (Chaas),dairy,per 500 ml pouch,66,12.13,16.23,4,25.2,-1.55
+PROD-0092,Garlic Herb Baguette,bakery,per loaf,18,49.84,72.12,3,13.8,-1.65
+PROD-0093,Ratnagiri Alphonso Mangoes,fruits,per kilogram,49,238.62,315.4,5,16.0,-1.45
+PROD-0094,English Cucumber,vegetables,per 500 g pack,58,22.9,35.03,5,18.0,-1.64
+PROD-0095,Natural Creamy Peanut Butter,packaged food,per 500 g jar,15,155.1,208.82,101,7.6,-1.36
+PROD-0096,Fresh Dairy Cream,dairy,per 250 ml pack,26,58.74,71.83,22,13.6,-1.21
+PROD-0097,Sweet Cinnamon Swirl Buns,bakery,per 2-piece pack,24,44.09,58.76,4,11.8,-1.98
+PROD-0098,Mosambi (Sweet Lime),fruits,per kilogram,28,57.86,82.23,6,21.2,-1.46
+PROD-0099,Fresh Button Mushrooms,vegetables,per 200 g pack,35,45.02,62.9,5,14.7,-1.49
+PROD-0100,Tata Iodized Salt,packaged food,per 1 kg pack,78,21.2,26.35,152,37.6,-0.62
+PROD-0101,Toned Fresh Milk,dairy,per litre,114,52.95,62.0,2,42.6,-1.09
+PROD-0102,White Sandwich Bread,bakery,per loaf,55,31.2,40.47,4,32.4,-1.73
+PROD-0103,Royal Gala Apples,fruits,per kilogram,27,121.8,173.72,13,20.6,-1.68
+PROD-0104,Table Potatoes (Aloo),vegetables,per kilogram,127,18.86,26.65,14,35.7,-0.87
+PROD-0105,Royal Daawat Basmati Rice,packaged food,per kilogram,39,112.13,145.59,154,27.0,-1.25
+PROD-0106,Full Cream Fresh Milk,dairy,per litre,100,63.46,73.46,2,43.2,-1.08
+PROD-0107,Whole Wheat Atta Bread,bakery,per loaf,32,40.13,53.28,5,27.8,-1.69
+PROD-0108,Shimla Red Delicious Apples,fruits,per kilogram,38,110.23,151.98,10,21.6,-1.3
+PROD-0109,Red Cooking Onions (Pyaz),vegetables,per kilogram,126,32.92,47.19,14,74.6,-1.14
+PROD-0110,Premium Sona Masoori Rice,packaged food,per kilogram,45,51.59,64.97,119,42.7,-1.03
+PROD-0111,Fresh Curd / Dahi,dairy,per 500 g pack,33,32.35,39.4,6,37.7,-1.48
+PROD-0112,Multigrain Brown Bread,bakery,per loaf,27,46.63,61.32,3,18.8,-1.6
+PROD-0113,Robusta Cavendish Bananas,fruits,per dozen,82,38.67,54.09,6,47.3,-1.61
+PROD-0114,Hybrid Tomatoes (Tamatar),vegetables,per kilogram,44,27.36,42.48,7,39.7,-1.48
+PROD-0115,Durum Wheat Spaghetti Pasta,packaged food,per 500 g pack,39,72.74,101.71,120,21.5,-1.13
+PROD-0116,Malai Paneer,dairy,per 200 g pack,44,82.04,105.91,5,27.0,-1.43
+PROD-0117,Ladi Pav,bakery,per 6-piece pack,34,20.49,28.27,3,38.9,-1.46
+PROD-0118,Nagpur Mandarin Oranges,fruits,per kilogram,38,64.46,88.74,5,18.8,-1.88
+PROD-0119,Fresh White Cauliflower,vegetables,per head,39,29.42,45.3,5,30.0,-1.99
+PROD-0120,Whole Wheat Chakki Atta,packaged food,per 5 kg bag,54,216.95,268.2,92,39.5,-0.85
