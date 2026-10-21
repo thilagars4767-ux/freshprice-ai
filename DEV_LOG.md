@@ -1,18 +1,31 @@
 # FreshPrice - Development Log
 
-## Milestone 1.1: Indian Grocery Adaptation & INR Pricing
-- **Date**: 2026-10-21
+## Milestone 2.1: Financial Accounting Audit & Reconciled P&L
+- **Date**: 2026-10-22
 - **Status**: Completed & Verified.
-- **Key Enhancements**:
-  - **Currency Alignment**: All monetary figures (`unit_cost`, `regular_price`) transitioned to INR (Indian Rupees - ₹).
-  - **Explicit Selling Units**: Added `unit` column identifying quantity per price quote (`per litre`, `per 500 g pack`, `per kilogram`, `per head`, `per loaf`, `per dozen`, etc.).
-  - **Product-Specific Pricing**: Replaced generic category bounds with individual product-level wholesale cost ranges, retail markups, shelf lives, and price elasticity for 50 distinct Indian grocery items.
-  - **Synthetic Data Disclaimer**: Explicitly documented assumptions and synthetic status of all prices.
-  - **Dataset Regeneration**: Re-generated `data/synthetic_grocery_inventory.csv` (120 records, seed 42) adhering to all 10 columns.
-  - **Test Suite Updates**:
-    - `test_required_columns_and_unit_present`: Validates presence of `unit` and all other 9 required columns.
-    - `test_explicit_units_sample_check`: Verifies explicit units for milk, curd/yogurt, apples, cauliflower, bread, potatoes, and pasta.
-    - `test_inr_prices_and_regular_price_greater_than_cost`: Verifies positive values, realistic INR price scales, and strict `regular_price > unit_cost`.
-    - `test_reproducibility`, `test_category_coverage`, `test_minimum_record_count`, `test_save_dataset`, and `test_cli_execution`.
+- **Audit Findings & Key Fixes**:
+  - **Clarified Accounting Identities**:
+    - `Revenue = Units Sold * Selling Price`
+    - `COGS = Units Sold * Unit Cost`
+    - `Gross Profit = Revenue - COGS`
+    - `Waste Loss = Unsold Units * Unit Cost`
+    - `Total Initial Inventory Cost = COGS + Waste Loss`
+    - `Net Retail Profit = Gross Profit - Waste Loss = Revenue - Total Initial Inventory Cost`
+  - **Resolution of Negative Reported Profit with Positive Selling Margins**:
+    - Dissected why batches like Garlic Herb Baguette (`selling_price ₹51.36 > unit_cost ₹50.30`) and Toned Fresh Milk (`selling_price ₹58.90 > unit_cost ₹52.95`) report negative Net Retail Profit.
+    - Verified that in both cases, the **Gross Profit on sold units is positive**, but **Waste Loss on unsold expired inventory exceeds Gross Profit**.
+    - Verified that Dynamic Pricing actually **reduced batch losses** (Garlic Herb Baguette loss reduced from -₹150.73 to -₹74.26; Toned Fresh Milk loss reduced from -₹753.90 to -₹744.72).
+  - **Candidate Discount Optimization**:
+    - Added $d_{\text{clearance}}$ to candidate discounts to ensure optimal clearance when stock surplus is small (e.g. Butter Croissant now completely clears 0.40 units of waste and increases profit from ₹695.94 to ₹713.80).
+    - Verified that markdown profitability strictly checks that dynamic net profit $\ge$ baseline net profit.
+  - **CLI Report Overhaul**:
+    - Replaced the single `profit` column with explicit columns: `gross_profit`, `waste_loss`, and `net_profit`.
+    - Added structured financial P&L statement to the summary report.
+    - Removed non-encodable unicode characters for 100% Windows CLI compatibility.
+  - **Expanded Automated Tests (24 tests total)**:
+    - Added `test_financial_accounting_identities` (verifies all 5 identities hold per batch).
+    - Added `test_positive_margin_with_negative_net_profit_audit` (proves that negative net profit with positive margin occurs precisely when `waste_loss > gross_profit`).
+    - Added `test_markdown_profitability_guarantee` (proves dynamic pricing never applies a discount resulting in lower net profit than baseline).
+    - Added `test_aggregate_financial_reconciliation` (proves summary table totals match sum of batch rows).
 - **Verification**:
-  - 9/9 tests passed cleanly via `py -m pytest tests -v`.
+  - 24/24 tests passed cleanly via `py -m pytest tests -v`.
