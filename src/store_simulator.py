@@ -53,6 +53,7 @@ class InventoryBatch:
     expiry_day: int
     initial_quantity: float
     remaining_quantity: float
+    unit_cost: float = 0.0
 
     @property
     def is_empty(self) -> bool:
@@ -61,17 +62,45 @@ class InventoryBatch:
 
 @dataclass(frozen=True)
 class MarkdownPolicyConfig:
-    """Configurable near-expiry markdown discount thresholds."""
+    """Configurable near-expiry markdown discount thresholds and optimization settings."""
     threshold_1_days: int = 1     # 1 day to expiry
-    discount_1_pct: float = 0.40  # 40% discount
+    discount_1_pct: float = 0.40  # 40% discount (or max discount cap in demand_aware)
     threshold_2_days: int = 2     # 2 days to expiry
     discount_2_pct: float = 0.20  # 20% discount
     enforce_cost_floor: bool = True
+    policy_mode: str = "graduated_rule"  # "graduated_rule" or "demand_aware"
+    min_gross_margin_pct: float = 0.0    # target minimum gross margin % floor
+    waste_disposal_fee: float = 0.0      # penalty per wasted unit in INR
+    shopper_response_multiplier: float = 1.0  # Sensitivity analysis: 1.0 = normal, 0.5 = half-strength
+    category_configs: Optional[Dict[str, Tuple[int, float, int, float]]] = None  # Optional category overrides: {cat: (t1, d1, t2, d2)}
+
+
+def validate_markdown_config(config: MarkdownPolicyConfig) -> None:
+    """Validate markdown configuration parameters against impossible or invalid settings."""
+    if config.discount_1_pct < 0.0 or config.discount_2_pct < 0.0:
+        raise ValueError("Discount percentage cannot be negative.")
+    if config.discount_1_pct > 1.0 or config.discount_2_pct > 1.0:
+        raise ValueError("Discount percentage cannot exceed 100% (1.0).")
+    if config.threshold_1_days < 0 or config.threshold_2_days < 0:
+        raise ValueError("Expiry thresholds cannot be negative.")
+    if config.min_gross_margin_pct >= 100.0:
+        raise ValueError("Minimum gross margin percentage must be strictly less than 100.0%.")
+    if config.min_gross_margin_pct < 0.0:
+        raise ValueError("Minimum gross margin percentage cannot be negative.")
+    if config.shopper_response_multiplier < 0.0:
+        raise ValueError("Shopper response multiplier cannot be negative.")
+    if config.category_configs:
+        for cat, (t1, d1, t2, d2) in config.category_configs.items():
+            if t1 < 0 or t2 < 0:
+                raise ValueError(f"Category {cat} expiry thresholds cannot be negative.")
+            if d1 < 0.0 or d2 < 0.0 or d1 > 1.0 or d2 > 1.0:
+                raise ValueError(f"Category {cat} discounts must be between 0.0 and 1.0.")
 
 
 def get_shelf_life_aware_thresholds(
     shelf_life_days: int,
     config: MarkdownPolicyConfig,
+    override_thresholds: Optional[Tuple[int, int]] = None,
 ) -> Tuple[int, int]:
     """Calculate effective markdown thresholds adjusted for product shelf life.
 
@@ -81,6 +110,8 @@ def get_shelf_life_aware_thresholds(
         Total shelf life in days of the product catalog item.
     config : MarkdownPolicyConfig
         Configured global markdown thresholds.
+    override_thresholds : Optional[Tuple[int, int]], optional
+        Optional (t1, t2) thresholds overriding config defaults.
 
     Returns
     -------
@@ -90,10 +121,12 @@ def get_shelf_life_aware_thresholds(
         - effective_threshold_2 is bounded by max(1, shelf_life_days - 2)
         - effective_threshold_1 is bounded by effective_threshold_2
     """
+    cfg_t1 = override_thresholds[0] if override_thresholds else config.threshold_1_days
+    cfg_t2 = override_thresholds[1] if override_thresholds else config.threshold_2_days
     max_near_expiry_window = max(1, shelf_life_days - 2)
-    effective_threshold_2 = min(config.threshold_2_days, max_near_expiry_window)
+    effective_threshold_2 = min(cfg_t2, max_near_expiry_window)
     # Urgent clearance threshold cannot exceed near-expiry threshold
-    effective_threshold_1 = min(config.threshold_1_days, effective_threshold_2)
+    effective_threshold_1 = min(cfg_t1, effective_threshold_2)
     return effective_threshold_1, effective_threshold_2
 
 
@@ -116,6 +149,7 @@ class DailyRecord:
     gross_margin: float
     waste_cost: float
     ending_stock: float
+    active_batch_ids: str = ""
 
 
 @dataclass
@@ -132,6 +166,10 @@ class MarkdownEvent:
     units_sold: float
     units_wasted: float
     reason: str
+    requested_discount_pct: float = 0.0
+    actual_discount_pct: float = 0.0
+    margin_floor_limited: bool = False
+    available_stock: float = 0.0
 
 
 @dataclass
@@ -149,6 +187,9 @@ class PolicyMetrics:
     total_waste_cost: float
     ending_inventory: float
     markdown_events_count: int
+    sell_through_rate_pct: float = 0.0
+    net_contribution: float = 0.0
+    markdown_units_sold: float = 0.0
 
 
 @dataclass
@@ -162,6 +203,7 @@ class SimulationResult:
     markdown_events_df: pd.DataFrame
     comparison_summary_df: pd.DataFrame
     products_df: pd.DataFrame
+    recommendations_df: Optional[pd.DataFrame] = None
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +273,7 @@ def generate_arrival_schedule(
                     expiry_day=expiry_day,
                     initial_quantity=float(prod.batch_order_qty),
                     remaining_quantity=float(prod.batch_order_qty),
+                    unit_cost=float(prod.unit_cost),
                 )
             )
             day += prod.arrival_interval_days
@@ -305,9 +348,15 @@ def simulate_single_policy(
             expiry_day=b.expiry_day,
             initial_quantity=b.initial_quantity,
             remaining_quantity=b.initial_quantity,
+            unit_cost=b.unit_cost,
         )
         for b in arrival_batches
     ]
+
+    demand_profiles: Dict[str, Any] = {}
+    if policy_name == "markdown" and config.policy_mode == "demand_aware":
+        from src.demand_estimator import DemandEstimator
+        demand_profiles = DemandEstimator().estimate_all_products(products)
 
     active_inventory: List[InventoryBatch] = []
     daily_records: List[DailyRecord] = []
@@ -360,40 +409,91 @@ def simulate_single_policy(
             selling_price = prod.base_price
             discount_pct = 0.0
             discount_reason = "Regular price"
+            requested_discount_pct = 0.0
+            margin_floor_limited = False
 
             if policy_name == "markdown" and unexpired_batches:
-                eff_t1, eff_t2 = get_shelf_life_aware_thresholds(prod.shelf_life_days, config)
-
-                # Precedence Rule:
-                # 1. Urgent clearance takes highest precedence if min_days_to_expiry <= eff_t1 and discount_1_pct > 0.
-                # 2. Near-expiry markdown applies only if urgent clearance does not apply, min_days_to_expiry <= eff_t2, and discount_2_pct > 0.
-                # 3. Exactly one discount applies; discounts never stack or combine.
-                if min_days_to_expiry <= eff_t1 and config.discount_1_pct > 0.0:
-                    raw_discount = config.discount_1_pct
-                    discount_reason = f"Urgent clearance (<= {eff_t1} {'day' if eff_t1 == 1 else 'days'} to expiry)"
-                elif min_days_to_expiry <= eff_t2 and config.discount_2_pct > 0.0:
-                    raw_discount = config.discount_2_pct
-                    discount_reason = f"Near-expiry markdown (<= {eff_t2} {'day' if eff_t2 == 1 else 'days'} to expiry)"
-                else:
-                    raw_discount = 0.0
-                    discount_reason = "Sufficient shelf life remaining"
-
-                if raw_discount > 0.0:
-                    tentative_price = round(prod.base_price * (1.0 - raw_discount), 2)
-                    if config.enforce_cost_floor and tentative_price < prod.unit_cost:
-                        # Price floor: selling price cannot fall below unit cost
-                        selling_price = prod.unit_cost
-                        discount_pct = round((prod.base_price - selling_price) / prod.base_price, 4)
-                        discount_reason += " (Capped at unit cost floor)"
+                if config.policy_mode == "demand_aware":
+                    from src.discount_optimizer import CANDIDATE_DISCOUNTS, DiscountOptimizer
+                    # If discount_1_pct is specified > 0, bound candidate discounts by discount_1_pct
+                    if config.discount_1_pct > 0.0:
+                        candidates = tuple(d for d in CANDIDATE_DISCOUNTS if d <= config.discount_1_pct + 1e-4)
                     else:
-                        selling_price = tentative_price
-                        discount_pct = raw_discount
+                        candidates = (0.0,)
+
+                    optimizer = DiscountOptimizer(
+                        candidate_discounts=candidates,
+                        default_min_margin_pct=config.min_gross_margin_pct,
+                        waste_disposal_fee_per_unit=config.waste_disposal_fee,
+                    )
+                    profile = demand_profiles.get(p_id)
+                    rec = optimizer.optimize_product_discount(
+                        product=prod,
+                        current_stock=current_stock,
+                        days_to_expiry=min_days_to_expiry,
+                        demand_profile=profile,
+                        min_margin_pct=config.min_gross_margin_pct,
+                        waste_disposal_fee=config.waste_disposal_fee,
+                    )
+                    selling_price = rec.recommended_selling_price
+                    discount_pct = rec.recommended_discount_pct / 100.0
+                    discount_reason = rec.recommendation_explanation
+                    requested_discount_pct = rec.recommended_discount_pct
+                    margin_floor_limited = any(not c.is_feasible for c in rec.candidate_evaluations)
+                else:
+                    if config.category_configs and prod.category in config.category_configs:
+                        cfg_t1, cfg_d1, cfg_t2, cfg_d2 = config.category_configs[prod.category]
+                        eff_t1, eff_t2 = get_shelf_life_aware_thresholds(
+                            prod.shelf_life_days, config, override_thresholds=(cfg_t1, cfg_t2)
+                        )
+                    else:
+                        cfg_t1, cfg_d1, cfg_t2, cfg_d2 = (
+                            config.threshold_1_days,
+                            config.discount_1_pct,
+                            config.threshold_2_days,
+                            config.discount_2_pct,
+                        )
+                        eff_t1, eff_t2 = get_shelf_life_aware_thresholds(prod.shelf_life_days, config)
+
+                    # Precedence Rule:
+                    # 1. Urgent clearance takes highest precedence if min_days_to_expiry <= eff_t1 and discount_1_pct > 0.
+                    # 2. Near-expiry markdown applies only if urgent clearance does not apply, min_days_to_expiry <= eff_t2, and discount_2_pct > 0.
+                    # 3. Exactly one discount applies; discounts never stack or combine.
+                    if min_days_to_expiry <= eff_t1 and cfg_d1 > 0.0:
+                        raw_discount = cfg_d1
+                        discount_reason = f"Urgent clearance (<= {eff_t1} {'day' if eff_t1 == 1 else 'days'} to expiry)"
+                    elif min_days_to_expiry <= eff_t2 and cfg_d2 > 0.0:
+                        raw_discount = cfg_d2
+                        discount_reason = f"Near-expiry markdown (<= {eff_t2} {'day' if eff_t2 == 1 else 'days'} to expiry)"
+                    else:
+                        raw_discount = 0.0
+                        discount_reason = "Sufficient shelf life remaining"
+
+                    if raw_discount > 0.0:
+                        requested_discount_pct = round(raw_discount * 100.0, 2)
+                        tentative_price = round(prod.base_price * (1.0 - raw_discount), 2)
+                        min_price = prod.unit_cost
+                        if config.min_gross_margin_pct > 0.0:
+                            from src.discount_optimizer import compute_minimum_acceptable_price
+                            min_price = compute_minimum_acceptable_price(prod.unit_cost, config.min_gross_margin_pct)
+
+                        if config.enforce_cost_floor and tentative_price < min_price:
+                            # Price floor: selling price cannot fall below margin floor
+                            selling_price = min_price
+                            discount_pct = round((prod.base_price - selling_price) / prod.base_price, 4)
+                            discount_reason += f" (Capped at margin floor ₹{min_price:.2f})"
+                            margin_floor_limited = True
+                        else:
+                            selling_price = tentative_price
+                            discount_pct = raw_discount
+                            margin_floor_limited = False
 
             # 4. Calculate daily demand (depends on price discount and expiry urgency)
             base_d = baseline_demand.get((p_id, current_day), prod.avg_daily_demand)
 
-            # Price response: Q_adj = Q_base * (1 + sensitivity * discount)
-            price_multiplier = 1.0 + (prod.price_sensitivity * discount_pct)
+            # Price response: Q_adj = Q_base * (1 + shopper_multiplier * sensitivity * discount)
+            raw_discount_effect = 1.0 + (prod.price_sensitivity * discount_pct)
+            price_multiplier = 1.0 + config.shopper_response_multiplier * (raw_discount_effect - 1.0)
 
             # Expiry display effect:
             # Under fixed pricing, consumers avoid stock with only 1-2 days left without discount.
@@ -433,6 +533,7 @@ def simulate_single_policy(
             ending_prod_stock = sum(b.remaining_quantity for b in unexpired_batches)
 
             # 6. Record daily product history
+            active_ids_str = ", ".join(b.batch_id for b in unexpired_batches) if unexpired_batches else "None"
             rec = DailyRecord(
                 day=current_day,
                 policy=policy_name,
@@ -450,6 +551,7 @@ def simulate_single_policy(
                 gross_margin=day_margin,
                 waste_cost=prod_waste_cost,
                 ending_stock=round(ending_prod_stock, 1),
+                active_batch_ids=active_ids_str,
             )
             daily_records.append(rec)
 
@@ -467,6 +569,10 @@ def simulate_single_policy(
                     units_sold=round(day_sold, 1),
                     units_wasted=round(day_wasted, 1),
                     reason=discount_reason,
+                    requested_discount_pct=round(requested_discount_pct, 2),
+                    actual_discount_pct=round(discount_pct * 100.0, 2),
+                    margin_floor_limited=margin_floor_limited,
+                    available_stock=round(current_stock, 1),
                 )
                 markdown_events.append(m_event)
 
@@ -475,11 +581,16 @@ def simulate_single_policy(
 
     # Standard GAAP Metrics Definition:
     # Waste Rate = Wasted Units / Total Received Units
+    # Sell-Through Rate = Units Sold / Total Received Units
     # Gross Margin = Revenue - COGS
     # Gross Margin % = Gross Margin / Revenue
+    # Net Contribution after Waste Cost = Gross Margin - Total Waste Cost
     waste_rate_pct = round((total_units_wasted / total_units_received) * 100.0, 2) if total_units_received > 0 else 0.0
+    sell_through_rate_pct = round((total_units_sold / total_units_received) * 100.0, 2) if total_units_received > 0 else 0.0
     total_gross_margin = round(total_revenue - total_cogs, 2)
     gross_margin_pct = round((total_gross_margin / total_revenue) * 100.0, 2) if total_revenue > 0 else 0.0
+    net_contribution = round(total_gross_margin - total_waste_cost, 2)
+    markdown_units_sold = round(sum(r.units_sold for r in daily_records if r.policy == policy_name and r.discount_pct > 0.0), 1)
 
     metrics = PolicyMetrics(
         policy_name="Fixed-Price Baseline" if policy_name == "fixed" else "Dynamic Markdown Policy",
@@ -494,6 +605,9 @@ def simulate_single_policy(
         total_waste_cost=round(total_waste_cost, 2),
         ending_inventory=round(ending_inventory, 1),
         markdown_events_count=len(markdown_events),
+        sell_through_rate_pct=sell_through_rate_pct,
+        net_contribution=net_contribution,
+        markdown_units_sold=markdown_units_sold,
     )
 
     return metrics, daily_records, markdown_events
@@ -526,6 +640,8 @@ def run_store_simulation(
     SimulationResult
         Comprehensive result package with metrics, daily histories, and events.
     """
+    validate_markdown_config(config)
+
     if products is None:
         products = get_default_products()
 
@@ -559,7 +675,8 @@ def run_store_simulation(
     markdown_events_df = pd.DataFrame([asdict(e) for e in markdown_events]) if markdown_events else pd.DataFrame(
         columns=[
             "day", "product_id", "product_name", "category", "days_until_expiry",
-            "regular_price", "selling_price", "discount_pct", "units_sold", "units_wasted", "reason"
+            "regular_price", "selling_price", "discount_pct", "units_sold", "units_wasted",
+            "reason", "requested_discount_pct", "actual_discount_pct", "margin_floor_limited"
         ]
     )
 
@@ -571,22 +688,66 @@ def run_store_simulation(
     waste_reduction_pct = round(((f.units_wasted - m.units_wasted) / f.units_wasted) * 100.0, 2) if f.units_wasted > 0 else 0.0
     revenue_diff = round(m.revenue - f.revenue, 2)
     margin_diff = round(m.gross_margin - f.gross_margin, 2)
+    net_contrib_diff = round(m.net_contribution - f.net_contribution, 2)
+    cogs_diff = round(m.cogs - f.cogs, 2)
+    waste_cost_diff = round(m.total_waste_cost - f.total_waste_cost, 2)
 
     summary_rows = [
         {"Metric": "Initial Inventory Received (units)", "Fixed-Price Policy": f.total_received, "Markdown Policy": m.total_received, "Difference": 0.0},
         {"Metric": "Units Sold", "Fixed-Price Policy": f.units_sold, "Markdown Policy": m.units_sold, "Difference": round(m.units_sold - f.units_sold, 1)},
         {"Metric": "Units Wasted (Expired)", "Fixed-Price Policy": f.units_wasted, "Markdown Policy": m.units_wasted, "Difference": -waste_units_saved},
+        {"Metric": "Sell-Through Rate (%)", "Fixed-Price Policy": f"{f.sell_through_rate_pct:.2f}%", "Markdown Policy": f"{m.sell_through_rate_pct:.2f}%", "Difference": f"{m.sell_through_rate_pct - f.sell_through_rate_pct:+.2f}%"},
         {"Metric": "Waste Rate (%)", "Fixed-Price Policy": f"{f.waste_rate_pct:.2f}%", "Markdown Policy": f"{m.waste_rate_pct:.2f}%", "Difference": f"-{f.waste_rate_pct - m.waste_rate_pct:.2f}%"},
         {"Metric": "Waste Reduction (%)", "Fixed-Price Policy": "0.00%", "Markdown Policy": f"{waste_reduction_pct:.2f}%", "Difference": f"{waste_reduction_pct:.2f}%"},
         {"Metric": "Total Revenue (INR)", "Fixed-Price Policy": f.revenue, "Markdown Policy": m.revenue, "Difference": revenue_diff},
-        {"Metric": "Cost of Goods Sold - COGS (INR)", "Fixed-Price Policy": f.cogs, "Markdown Policy": m.cogs, "Difference": round(m.cogs - f.cogs, 2)},
+        {"Metric": "Cost of Goods Sold - COGS (INR)", "Fixed-Price Policy": f.cogs, "Markdown Policy": m.cogs, "Difference": cogs_diff},
         {"Metric": "Gross Margin (INR)", "Fixed-Price Policy": f.gross_margin, "Markdown Policy": m.gross_margin, "Difference": margin_diff},
         {"Metric": "Gross Margin (%)", "Fixed-Price Policy": f"{f.gross_margin_pct:.2f}%", "Markdown Policy": f"{m.gross_margin_pct:.2f}%", "Difference": f"{m.gross_margin_pct - f.gross_margin_pct:+.2f}%"},
+        {"Metric": "Total Waste Cost (INR)", "Fixed-Price Policy": f.total_waste_cost, "Markdown Policy": m.total_waste_cost, "Difference": waste_cost_diff},
+        {"Metric": "Net Contribution after Waste (INR)", "Fixed-Price Policy": f.net_contribution, "Markdown Policy": m.net_contribution, "Difference": net_contrib_diff},
         {"Metric": "Markdown Events Recorded", "Fixed-Price Policy": 0, "Markdown Policy": m.markdown_events_count, "Difference": m.markdown_events_count},
+        {"Metric": "Markdown Units Sold (units)", "Fixed-Price Policy": 0.0, "Markdown Policy": m.markdown_units_sold, "Difference": m.markdown_units_sold},
+        {"Metric": "Ending Inventory (units)", "Fixed-Price Policy": f.ending_inventory, "Markdown Policy": m.ending_inventory, "Difference": round(m.ending_inventory - f.ending_inventory, 1)},
     ]
     comparison_summary_df = pd.DataFrame(summary_rows)
 
     products_df = pd.DataFrame([asdict(p) for p in products])
+
+    # Step D: Generate Product Markdown Recommendations Table
+    recommendations_df: Optional[pd.DataFrame] = None
+    try:
+        from src.demand_estimator import DemandEstimator
+        from src.discount_optimizer import CANDIDATE_DISCOUNTS, DiscountOptimizer, recommendations_to_dataframe
+
+        estimator = DemandEstimator()
+        demand_profiles = estimator.estimate_all_products(products)
+
+        status_map: Dict[str, Tuple[float, int]] = {}
+        day30_recs = [r for r in markdown_daily if r.day == sim_days]
+        for r in day30_recs:
+            opening_stock = round(r.units_sold + r.ending_stock, 1)
+            status_map[r.product_id] = (opening_stock, r.days_until_expiry)
+
+        candidates = (
+            tuple(d for d in CANDIDATE_DISCOUNTS if d <= config.discount_1_pct + 1e-4)
+            if config.discount_1_pct > 0.0
+            else (0.0,)
+        )
+        optimizer = DiscountOptimizer(
+            candidate_discounts=candidates,
+            default_min_margin_pct=config.min_gross_margin_pct,
+            waste_disposal_fee_per_unit=config.waste_disposal_fee,
+        )
+        recommendations_map = optimizer.optimize_all_products(
+            products=products,
+            inventory_status=status_map,
+            demand_profiles=demand_profiles,
+            min_margin_pct=config.min_gross_margin_pct,
+            waste_disposal_fee=config.waste_disposal_fee,
+        )
+        recommendations_df = recommendations_to_dataframe(recommendations_map, products)
+    except Exception:
+        recommendations_df = None
 
     return SimulationResult(
         seed=seed,
@@ -597,11 +758,14 @@ def run_store_simulation(
         markdown_events_df=markdown_events_df,
         comparison_summary_df=comparison_summary_df,
         products_df=products_df,
+        recommendations_df=recommendations_df,
     )
 
 
 def export_mvp_csv_outputs(
-    sim_result: SimulationResult, output_dir: Path | str = DEFAULT_DATA_DIR
+    sim_result: SimulationResult,
+    output_dir: Path | str = DEFAULT_DATA_DIR,
+    include_recommendations: bool = False,
 ) -> Dict[str, Path]:
     """Export the official NEXAI MVP simulation outputs to CSV."""
     dest_dir = Path(output_dir).resolve()
@@ -629,6 +793,12 @@ def export_mvp_csv_outputs(
     sim_result.markdown_events_df.to_csv(events_path, index=False)
     paths["markdown_events_csv"] = events_path
 
+    # 5. Product markdown recommendations
+    if include_recommendations and sim_result.recommendations_df is not None and not sim_result.recommendations_df.empty:
+        recs_path = dest_dir / "product_markdown_recommendations.csv"
+        sim_result.recommendations_df.to_csv(recs_path, index=False)
+        paths["recommendations_csv"] = recs_path
+
     return paths
 
 
@@ -645,10 +815,13 @@ def main() -> None:
     )
     parser.add_argument("--days", type=int, default=30, help="Simulation duration (default 30).")
     parser.add_argument("--seed", type=int, default=42, help="Random seed (default 42).")
+    parser.add_argument("--policy-mode", type=str, default="graduated_rule", choices=["graduated_rule", "demand_aware"], help="Markdown policy mode (default: graduated_rule).")
     parser.add_argument("--t1", type=int, default=1, help="Threshold 1 days to expiry (default 1).")
     parser.add_argument("--d1", type=float, default=0.40, help="Discount 1 percentage (default 0.40).")
     parser.add_argument("--t2", type=int, default=2, help="Threshold 2 days to expiry (default 2).")
     parser.add_argument("--d2", type=float, default=0.20, help="Discount 2 percentage (default 0.20).")
+    parser.add_argument("--min-margin", type=float, default=0.0, help="Minimum gross margin floor percentage (default 0.0).")
+    parser.add_argument("--disposal-fee", type=float, default=0.0, help="Waste disposal fee per unit in INR (default 0.0).")
     parser.add_argument("--output-dir", type=str, default=str(DEFAULT_DATA_DIR), help="Output directory for CSVs.")
 
     args = parser.parse_args()
@@ -658,6 +831,9 @@ def main() -> None:
         discount_1_pct=args.d1,
         threshold_2_days=args.t2,
         discount_2_pct=args.d2,
+        policy_mode=args.policy_mode,
+        min_gross_margin_pct=args.min_margin,
+        waste_disposal_fee=args.disposal_fee,
     )
 
     print(f"Running FreshPrice AI 30-Day Store Simulator (Seed: {args.seed}, Days: {args.days})...")
@@ -669,7 +845,7 @@ def main() -> None:
     print(res.comparison_summary_df.to_string(index=False))
     print("=" * 65)
 
-    saved = export_mvp_csv_outputs(res, output_dir=args.output_dir)
+    saved = export_mvp_csv_outputs(res, output_dir=args.output_dir, include_recommendations=True)
     print("\nSaved MVP CSV Deliverables:")
     for k, v in saved.items():
         print(f"  - {k}: {v}")

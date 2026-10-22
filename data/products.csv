@@ -1,0 +1,21 @@
+product_id,product_name,category,regular_price,unit_cost,base_daily_demand,price_sensitivity,shelf_life_days
+PROD-01,Toned Fresh Milk,dairy,60.0,52.0,35.0,1.4,3
+PROD-02,Full Cream Fresh Milk,dairy,74.0,64.0,30.0,1.3,3
+PROD-03,Fresh Curd / Dahi,dairy,42.0,32.0,25.0,1.5,6
+PROD-04,Malai Paneer,dairy,105.0,82.0,18.0,1.6,5
+PROD-05,Spiced Buttermilk / Chaas,dairy,18.0,13.0,28.0,1.5,4
+PROD-06,White Sandwich Bread,bakery,40.0,30.0,30.0,1.7,4
+PROD-07,Whole Wheat Atta Bread,bakery,50.0,38.0,22.0,1.6,4
+PROD-08,Ladi Pav,bakery,28.0,20.0,35.0,1.8,3
+PROD-09,Brioche Burger Buns,bakery,42.0,30.0,18.0,1.7,4
+PROD-10,Garlic Herb Baguette,bakery,68.0,50.0,12.0,1.9,3
+PROD-11,Royal Gala Apples,fruits,180.0,130.0,22.0,1.5,8
+PROD-12,Robusta Cavendish Bananas,fruits,58.0,40.0,35.0,1.8,4
+PROD-13,Nagpur Mandarin Oranges,fruits,88.0,62.0,20.0,1.6,7
+PROD-14,Green Seedless Grapes,fruits,72.0,50.0,18.0,1.8,5
+PROD-15,Semi-Ripe Papaya,fruits,42.0,28.0,20.0,1.7,4
+PROD-16,Hybrid Tomatoes (Tamatar),vegetables,36.0,24.0,40.0,1.6,5
+PROD-17,Fresh White Cauliflower,vegetables,36.0,24.0,25.0,1.7,5
+PROD-18,Baby Spinach (Palak),vegetables,22.0,14.0,32.0,1.9,3
+PROD-19,Green Capsicum (Shimla Mirch),vegetables,45.0,30.0,18.0,1.6,5
+PROD-20,Fresh Button Mushrooms,vegetables,58.0,40.0,16.0,1.8,4

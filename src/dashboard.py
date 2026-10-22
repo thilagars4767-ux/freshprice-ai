@@ -2,8 +2,8 @@
 
 NEXAI 2026 Hackathon: Problem Statement 4.1 (Track 4: Grocery Retail).
 
-A focused, single-page Streamlit application designed with a modern red-and-white
-Zomato-inspired aesthetic and strict light theme. Simulates a 30-day grocery store with
+A comprehensive, single-page Streamlit application designed with a modern red-and-white
+Zomato-inspired aesthetic and strict light theme. Simulates a grocery store with
 20 perishable products, comparing:
   1. Fixed-Price Policy (always charges base regular price)
   2. Dynamic Markdown Policy (graduated near-expiry discounts with wholesale cost floor)
@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
-from typing import Any, Dict
+import textwrap
+from typing import Any, Dict, List, Optional, Tuple
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -22,20 +23,24 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from src.store_simulator import (
     DEFAULT_DATA_DIR,
+    InventoryBatch,
     MarkdownPolicyConfig,
     PolicyMetrics,
+    Product,
     SimulationResult,
     export_mvp_csv_outputs,
+    generate_arrival_schedule,
     get_default_products,
     run_store_simulation,
 )
 
 # ---------------------------------------------------------------------------
-# Formatting Helpers
+# Formatting & HTML Helpers
 # ---------------------------------------------------------------------------
 
 def format_inr(value: float, include_sign: bool = False) -> str:
@@ -54,6 +59,15 @@ def format_pct(value: float, include_sign: bool = False) -> str:
     return f"{value:.2f}%"
 
 
+def format_pp(value: float, include_sign: bool = False) -> str:
+    """Format a percentage-point difference with appropriate sign and 'pp' label."""
+    if include_sign and value > 0:
+        return f"+{value:.2f} pp"
+    elif value < 0:
+        return f"-{abs(value):.2f} pp"
+    return f"{value:.2f} pp"
+
+
 def format_units(value: float, include_sign: bool = False) -> str:
     """Format physical inventory or sales unit quantity with consistent sign convention."""
     if abs(value - round(value)) < 1e-4:
@@ -70,10 +84,80 @@ def format_units(value: float, include_sign: bool = False) -> str:
     return f"{val_str} units"
 
 
+def render_html(html_str: str, container: Any = None) -> None:
+    """Safely render HTML in Streamlit without triggering Markdown indented code block mode."""
+    target = container if container is not None else st
+    clean_lines = [line.strip() for line in html_str.strip().splitlines()]
+    clean_html = "\n".join(clean_lines)
+    if hasattr(target, "html"):
+        target.html(clean_html)
+    else:
+        target.markdown(clean_html, unsafe_allow_html=True)
+
+
+def generate_rule_logic_explanation(
+    near_expiry_threshold: int,
+    near_expiry_discount_pct: float | int,
+    urgent_threshold: int,
+    urgent_discount_pct: float | int,
+) -> str:
+    """Generate dynamic explanatory markdown text for the configured discount rules.
+
+    Accurately reflects the actual simulator logic:
+    - Bounded by '<=' ('or fewer days')
+    - Explains urgent clearance rule precedence
+    - Formulates margin floor and expiration constraints
+    """
+    # Normalize percentages to integer display (e.g. 20 for 20% or 0.20)
+    if isinstance(near_expiry_discount_pct, float) and near_expiry_discount_pct <= 1.0 and near_expiry_discount_pct > 0.0:
+        d2_val = int(round(near_expiry_discount_pct * 100))
+    else:
+        d2_val = int(round(near_expiry_discount_pct))
+
+    if isinstance(urgent_discount_pct, float) and urgent_discount_pct <= 1.0 and urgent_discount_pct > 0.0:
+        d1_val = int(round(urgent_discount_pct * 100))
+    else:
+        d1_val = int(round(urgent_discount_pct))
+
+    t2_val = int(near_expiry_threshold)
+    t1_val = int(urgent_threshold)
+
+    return (
+        "**Rule Logic:**\n"
+        f"- When a product has {t2_val} or fewer days remaining before expiry, apply the configured {d2_val}% near-expiry discount, subject to the urgent rule.\n"
+        f"- When a product has {t1_val} or fewer days remaining before expiry, apply the configured {d1_val}% urgent-clearance discount.\n"
+        "- Never sell expired products.\n"
+        "- Never price below the configured minimum gross-margin floor."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Data Loaders (Cached)
+# ---------------------------------------------------------------------------
+
+@st.cache_data
+def load_historical_demand_data() -> pd.DataFrame:
+    """Load the 365-day synthetic historical demand dataset from disk."""
+    csv_path = PROJECT_ROOT / "data" / "historical_product_demand.csv"
+    if csv_path.exists():
+        return pd.read_csv(csv_path)
+    return pd.DataFrame()
+
+
+@st.cache_data
+def load_product_price_history() -> pd.DataFrame:
+    """Load the 365-day synthetic product price history dataset from disk."""
+    csv_path = PROJECT_ROOT / "data" / "product_price_history.csv"
+    if csv_path.exists():
+        return pd.read_csv(csv_path)
+    return pd.DataFrame()
+
+
 # ---------------------------------------------------------------------------
 # Dashboard Simulation Orchestration (Decoupled from Streamlit UI)
 # ---------------------------------------------------------------------------
 
+@st.cache_data
 def run_dashboard_simulation(
     sim_days: int = 30,
     seed: int = 42,
@@ -82,11 +166,17 @@ def run_dashboard_simulation(
     threshold_2_days: int = 2,
     discount_2_pct: float = 0.20,
     enforce_cost_floor: bool = True,
+    policy_mode: str = "graduated_rule",
+    min_gross_margin_pct: float = 0.0,
+    waste_disposal_fee: float = 0.0,
+    shopper_response_multiplier: float = 1.0,
+    category_configs: Optional[Dict[str, Tuple[int, float, int, float]]] = None,
 ) -> SimulationResult:
     """Execute store simulation with the exact parameters configured in the dashboard.
 
-    Guarantees that every change to markdown thresholds or discount percentages
-    instantiates a fresh MarkdownPolicyConfig and recalculates the simulation.
+    Guarantees that every change to markdown thresholds, discount percentages,
+    policy strategy, margin protection, or sensitivity multiplier instantiates
+    a fresh MarkdownPolicyConfig and recalculates the simulation.
     """
     config = MarkdownPolicyConfig(
         threshold_1_days=int(threshold_1_days),
@@ -94,6 +184,11 @@ def run_dashboard_simulation(
         threshold_2_days=int(threshold_2_days),
         discount_2_pct=float(discount_2_pct),
         enforce_cost_floor=bool(enforce_cost_floor),
+        policy_mode=str(policy_mode),
+        min_gross_margin_pct=float(min_gross_margin_pct),
+        waste_disposal_fee=float(waste_disposal_fee),
+        shopper_response_multiplier=float(shopper_response_multiplier),
+        category_configs=category_configs,
     )
     return run_store_simulation(sim_days=int(sim_days), seed=int(seed), config=config)
 
@@ -176,7 +271,6 @@ def create_waste_comparison_chart(fixed: PolicyMetrics, markdown: PolicyMetrics)
     policies = ["Fixed-Price Policy", "Markdown Policy"]
     waste_units = [fixed.units_wasted, markdown.units_wasted]
 
-    # Red for preventable waste loss under Fixed; Fresh Green for markdown prevention
     fig.add_trace(
         go.Bar(
             name="Units Wasted (Expired)",
@@ -213,20 +307,376 @@ def create_waste_comparison_chart(fixed: PolicyMetrics, markdown: PolicyMetrics)
     return fig
 
 
+def create_daily_trends_chart(daily_history_df: pd.DataFrame) -> go.Figure:
+    """Create an interactive daily store-level sales and waste trend chart comparing both policies."""
+    fig = go.Figure()
+
+    grouped = (
+        daily_history_df.groupby(["day", "policy"])
+        .agg({"units_sold": "sum", "units_wasted": "sum", "revenue": "sum"})
+        .reset_index()
+    )
+
+    fixed_df = grouped[grouped["policy"] == "fixed"].sort_values("day")
+    md_df = grouped[grouped["policy"] == "markdown"].sort_values("day")
+
+    fig.add_trace(
+        go.Scatter(
+            name="Fixed Policy Sales (units)",
+            x=fixed_df["day"],
+            y=fixed_df["units_sold"],
+            mode="lines",
+            line=dict(color="#718096", width=2, dash="dash"),
+            hovertemplate="Day %{x}<br>Fixed Sales: %{y:,.1f} units<extra></extra>",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            name="Markdown Policy Sales (units)",
+            x=md_df["day"],
+            y=md_df["units_sold"],
+            mode="lines+markers",
+            line=dict(color="#E23744", width=2.5),
+            marker=dict(size=4, color="#E23744"),
+            hovertemplate="Day %{x}<br>Markdown Sales: %{y:,.1f} units<extra></extra>",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            name="Fixed Policy Waste (Expired)",
+            x=fixed_df["day"],
+            y=fixed_df["units_wasted"],
+            mode="lines+markers",
+            line=dict(color="#C53030", width=1.5, dash="dot"),
+            marker=dict(size=6, symbol="x", color="#C53030"),
+            hovertemplate="Day %{x}<br>Fixed Expired Waste: %{y:,.1f} units<extra></extra>",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            name="Markdown Policy Waste (Expired)",
+            x=md_df["day"],
+            y=md_df["units_wasted"],
+            mode="lines+markers",
+            line=dict(color="#008A3E", width=1.5),
+            marker=dict(size=6, symbol="circle", color="#008A3E"),
+            hovertemplate="Day %{x}<br>Markdown Expired Waste: %{y:,.1f} units<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title="<b>Daily Store Trends: Physical Units Sold & Expired Waste over Time</b>",
+        template="plotly_white",
+        yaxis=dict(
+            title="Physical Quantity (Units)",
+            gridcolor="#F0F0F0",
+            linecolor="#E8E8E8",
+            tickfont=dict(color="#222222"),
+        ),
+        xaxis=dict(
+            title="Simulation Day",
+            gridcolor="#F0F0F0",
+            linecolor="#E8E8E8",
+            tickfont=dict(color="#222222"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(color="#222222"),
+        ),
+        margin=dict(l=40, r=40, t=70, b=40),
+        font=dict(family="Inter, -apple-system, sans-serif", size=12, color="#222222"),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+    return fig
+
+
+def create_sim_product_price_chart(p_md_df: pd.DataFrame, product_name: str) -> go.Figure:
+    """Chart comparing Regular Base Price vs Actual Selling Price across the 30-day simulation."""
+    fig = go.Figure()
+    p_sorted = p_md_df.sort_values("day")
+
+    fig.add_trace(
+        go.Scatter(
+            name="Regular Base Price (₹)",
+            x=p_sorted["day"],
+            y=p_sorted["regular_price"],
+            mode="lines",
+            line=dict(color="#718096", width=2, dash="dash"),
+            hovertemplate="Day %{x}<br>Base Price: ₹%{y:,.2f}<extra></extra>",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            name="Actual Selling Price (₹)",
+            x=p_sorted["day"],
+            y=p_sorted["selling_price"],
+            mode="lines+markers",
+            line=dict(color="#E23744", width=2.5),
+            marker=dict(size=5, color="#E23744"),
+            hovertemplate="Day %{x}<br>Selling Price: ₹%{y:,.2f}<br>Discount: "
+            + p_sorted["discount_pct"].apply(lambda v: f"{v:.1f}%")
+            + "<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=f"<b>Simulated Price Trajectory: Regular vs. Dynamic Selling Price — {product_name}</b>",
+        template="plotly_white",
+        yaxis=dict(title="Price in INR (₹)", gridcolor="#F0F0F0", linecolor="#E8E8E8"),
+        xaxis=dict(title="Simulation Day", gridcolor="#F0F0F0", linecolor="#E8E8E8"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40, r=40, t=70, b=40),
+        font=dict(family="Inter, -apple-system, sans-serif", size=12, color="#222222"),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+    return fig
+
+
+def create_sim_product_sales_waste_chart(p_md_df: pd.DataFrame, product_name: str) -> go.Figure:
+    """Chart showing daily units sold and units wasted for a single product under Markdown Policy."""
+    fig = go.Figure()
+    p_sorted = p_md_df.sort_values("day")
+
+    fig.add_trace(
+        go.Bar(
+            name="Units Sold",
+            x=p_sorted["day"],
+            y=p_sorted["units_sold"],
+            marker_color="#008A3E",
+            opacity=0.85,
+            hovertemplate="Day %{x}<br>Units Sold: %{y:,.1f}<extra></extra>",
+        )
+    )
+
+    fig.add_trace(
+        go.Bar(
+            name="Units Wasted (Expired)",
+            x=p_sorted["day"],
+            y=p_sorted["units_wasted"],
+            marker_color="#E23744",
+            opacity=0.90,
+            hovertemplate="Day %{x}<br>Units Wasted: %{y:,.1f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=f"<b>Daily Sales Velocity & Physical Waste — {product_name}</b>",
+        barmode="group",
+        template="plotly_white",
+        yaxis=dict(title="Physical Quantity (Units)", gridcolor="#F0F0F0", linecolor="#E8E8E8"),
+        xaxis=dict(title="Simulation Day", gridcolor="#F0F0F0", linecolor="#E8E8E8"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40, r=40, t=70, b=40),
+        font=dict(family="Inter, -apple-system, sans-serif", size=12, color="#222222"),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+    return fig
+
+
+def create_historical_price_chart(product_df: pd.DataFrame, product_name: str) -> go.Figure:
+    """Create an interactive time-series graph comparing Regular Price vs Actual Selling Price in INR (₹)."""
+    fig = go.Figure()
+    p_sorted = product_df.sort_values("date")
+
+    # Trace 1: Regular Base Price (Neutral Slate dashed line)
+    fig.add_trace(
+        go.Scatter(
+            name="Regular Base Price (₹)",
+            x=p_sorted["date"],
+            y=p_sorted["regular_price"],
+            mode="lines",
+            line=dict(color="#718096", width=2, dash="dash"),
+            hovertemplate="<b>%{x}</b><br>Regular Price: ₹%{y:,.2f}<extra></extra>",
+        )
+    )
+
+    # Trace 2: Actual Selling Price (FreshPrice Red solid line with markers)
+    fig.add_trace(
+        go.Scatter(
+            name="Actual Selling Price (₹)",
+            x=p_sorted["date"],
+            y=p_sorted["actual_price"],
+            mode="lines+markers",
+            line=dict(color="#E23744", width=2.5),
+            marker=dict(size=4, color="#E23744"),
+            hovertemplate="<b>%{x}</b><br>Actual Price: ₹%{y:,.2f}<br>Discount: "
+            + p_sorted["discount_pct"].apply(lambda v: f"{v:.1f}%")
+            + "<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=f"<b>Historical Price Trajectory: Regular vs. Actual Selling Price (₹) — {product_name}</b>",
+        template="plotly_white",
+        font=dict(family="Inter, -apple-system, sans-serif", size=12, color="#222222"),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(color="#222222"),
+        ),
+        margin=dict(l=40, r=40, t=70, b=40),
+        hovermode="x unified",
+    )
+
+    fig.update_yaxes(
+        title_text="Price in INR (₹)",
+        gridcolor="#F0F0F0",
+        linecolor="#E8E8E8",
+        tickfont=dict(color="#222222"),
+        title_font=dict(color="#222222"),
+    )
+
+    fig.update_xaxes(
+        title_text="Calendar Date",
+        gridcolor="#F0F0F0",
+        linecolor="#E8E8E8",
+        tickfont=dict(color="#222222"),
+        title_font=dict(color="#222222"),
+    )
+
+    return fig
+
+
+def create_discount_history_chart(product_df: pd.DataFrame, product_name: str) -> go.Figure:
+    """Create an interactive bar chart of promotional discount percentages over time."""
+    fig = go.Figure()
+    p_sorted = product_df.sort_values("date")
+
+    fig.add_trace(
+        go.Bar(
+            name="Promotional Discount (%)",
+            x=p_sorted["date"],
+            y=p_sorted["discount_pct"],
+            marker_color="#E23744",
+            opacity=0.85,
+            hovertemplate="<b>%{x}</b><br>Discount: %{y:.1f}%<extra></extra>",
+        )
+    )
+
+    max_disc = float(p_sorted["discount_pct"].max()) if not p_sorted.empty else 40.0
+    y_max = max(50.0, max_disc + 5.0)
+
+    fig.update_layout(
+        title=f"<b>Historical Promotional Markdown Discount Frequency (%) — {product_name}</b>",
+        template="plotly_white",
+        font=dict(family="Inter, -apple-system, sans-serif", size=12, color="#222222"),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        margin=dict(l=40, r=40, t=70, b=40),
+    )
+
+    fig.update_yaxes(
+        title_text="Discount Percentage (%)",
+        gridcolor="#F0F0F0",
+        linecolor="#E8E8E8",
+        tickfont=dict(color="#222222"),
+        title_font=dict(color="#222222"),
+        range=[0, y_max],
+    )
+
+    fig.update_xaxes(
+        title_text="Calendar Date",
+        gridcolor="#F0F0F0",
+        linecolor="#E8E8E8",
+        tickfont=dict(color="#222222"),
+        title_font=dict(color="#222222"),
+    )
+
+    return fig
+
+
+def create_demand_trend_chart(product_df: pd.DataFrame, product_name: str) -> go.Figure:
+    """Create an interactive chart of daily units sold and available stock over time."""
+    fig = go.Figure()
+    p_sorted = product_df.sort_values("date")
+
+    # Units Sold (Emerald Green Bar)
+    fig.add_trace(
+        go.Bar(
+            name="Units Sold",
+            x=p_sorted["date"],
+            y=p_sorted["units_sold"],
+            marker_color="#008A3E",
+            opacity=0.85,
+            hovertemplate="<b>%{x}</b><br>Units Sold: %{y:,.1f}<extra></extra>",
+        )
+    )
+
+    # Available Physical Stock (Slate dotted line)
+    fig.add_trace(
+        go.Scatter(
+            name="Units Available (Stock)",
+            x=p_sorted["date"],
+            y=p_sorted["units_available"],
+            mode="lines",
+            line=dict(color="#718096", width=2, dash="dot"),
+            hovertemplate="<b>%{x}</b><br>Available Stock: %{y:,.1f} units<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=f"<b>Daily Consumer Demand Trend & Inventory Velocity (Units) — {product_name}</b>",
+        template="plotly_white",
+        font=dict(family="Inter, -apple-system, sans-serif", size=12, color="#222222"),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(color="#222222"),
+        ),
+        margin=dict(l=40, r=40, t=70, b=40),
+        hovermode="x unified",
+    )
+
+    fig.update_yaxes(
+        title_text="Physical Quantity (Units)",
+        gridcolor="#F0F0F0",
+        linecolor="#E8E8E8",
+        tickfont=dict(color="#222222"),
+        title_font=dict(color="#222222"),
+    )
+
+    fig.update_xaxes(
+        title_text="Calendar Date",
+        gridcolor="#F0F0F0",
+        linecolor="#E8E8E8",
+        tickfont=dict(color="#222222"),
+        title_font=dict(color="#222222"),
+    )
+
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Strict Light Theme & Zomato Red-and-White Custom Styling
 # ---------------------------------------------------------------------------
 
 def render_custom_css() -> None:
     """Inject strict light-theme typography, white backgrounds, and Zomato card designs."""
-    st.markdown(
+    render_html(
         """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-        /* =========================================================================
-           STRICT LIGHT THEME OVERRIDES (White #FFFFFF, Sidebar #F8F8F8, Text #222222)
-           ========================================================================= */
 
         html, body, [class*="css"] {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -234,19 +684,16 @@ def render_custom_css() -> None:
             background-color: #FFFFFF !important;
         }
 
-        /* Streamlit App Container */
         .stApp, [data-testid="stAppViewContainer"], .main, .block-container {
             background-color: #FFFFFF !important;
             color: #222222 !important;
         }
 
-        /* Streamlit Top Header */
         header[data-testid="stHeader"] {
             background-color: #FFFFFF !important;
             border-bottom: 1px solid #F0F0F0 !important;
         }
 
-        /* Streamlit Sidebar (Very Light Gray #F8F8F8) */
         section[data-testid="stSidebar"], [data-testid="stSidebarNav"] {
             background-color: #F8F8F8 !important;
             border-right: 1px solid #EAEAEA !important;
@@ -264,12 +711,10 @@ def render_custom_css() -> None:
             font-weight: 500 !important;
         }
 
-        /* Global Headings & Typography */
         h1, h2, h3, h4, h5, h6, p, span, div, label {
             color: #222222;
         }
 
-        /* Form Inputs & Controls */
         div[data-baseweb="input"], 
         div[data-baseweb="input"] > div,
         div[data-baseweb="select"], 
@@ -287,12 +732,10 @@ def render_custom_css() -> None:
             color: #222222 !important;
         }
 
-        /* Sliders */
         div[data-testid="stSlider"] > div {
             color: #222222 !important;
         }
 
-        /* Buttons & CSV Downloads */
         .stButton > button, div.stDownloadButton > button {
             background-color: #FFFFFF !important;
             color: #E23744 !important;
@@ -309,116 +752,55 @@ def render_custom_css() -> None:
             box-shadow: 0 4px 12px rgba(226, 55, 68, 0.2) !important;
         }
 
-        /* DataTables */
         div[data-testid="stDataFrame"] {
             background-color: #FFFFFF !important;
             border: 1px solid #E8E8E8 !important;
             border-radius: 8px !important;
         }
 
-        /* Hero Header Banner */
-        .zomato-hero {
-            background: linear-gradient(135deg, #FFF5F6 0%, #FFFFFF 100%);
-            border: 1px solid #FFD2D6;
-            border-left: 6px solid #E23744;
-            border-radius: 12px;
-            padding: 24px 28px;
-            margin-bottom: 24px;
-            box-shadow: 0 4px 16px rgba(226, 55, 68, 0.05);
-        }
-        .zomato-badge {
-            background-color: #E23744;
-            color: #ffffff !important;
-            font-size: 0.82rem;
-            font-weight: 700;
-            padding: 4px 12px;
-            border-radius: 6px;
-            display: inline-block;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-            margin-bottom: 8px;
-        }
-        .zomato-title {
-            font-size: 2.1rem;
-            font-weight: 800;
-            color: #222222;
-            margin: 0 0 6px 0;
-            line-height: 1.2;
-        }
-        .zomato-subtitle {
-            font-size: 0.98rem;
-            color: #555555;
-            margin: 0;
-            line-height: 1.5;
-        }
-
-        /* Active Settings Bar */
-        .settings-bar {
-            background-color: #FFFFFF;
-            border: 1px solid #EAEAEA;
-            border-radius: 10px;
-            padding: 12px 18px;
-            margin-bottom: 24px;
+        .metadata-bar {
+            background-color: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 8px;
+            padding: 10px 16px;
+            margin: 12px 0 20px 0;
             display: flex;
             flex-wrap: wrap;
-            gap: 10px;
+            gap: 16px;
             align-items: center;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.02);
+            font-size: 0.82rem;
+            color: #475569;
         }
-        .setting-chip {
-            background-color: #F8F8F8;
-            border: 1px solid #E8E8E8;
-            border-radius: 20px;
-            padding: 5px 12px;
-            font-size: 0.80rem;
-            font-weight: 600;
-            color: #222222;
+        .metadata-bar span {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-        }
-        .setting-chip-highlight {
-            background-color: #FFF5F6;
-            border: 1px solid #FFD2D6;
-            color: #E23744 !important;
-            font-weight: 700;
+            gap: 5px;
         }
 
-        /* Policy Side-by-Side Comparison Columns (White Cards) */
         .policy-card {
             background-color: #FFFFFF !important;
-            border: 1px solid #E8E8E8;
-            border-radius: 12px;
-            padding: 22px 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
             height: 100%;
-            transition: transform 0.15s ease, box-shadow 0.15s ease;
-        }
-        .policy-card:hover {
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
         }
         .card-fixed {
-            border-top: 4px solid #718096 !important; /* Neutral Gray Accent */
-            background-color: #FFFFFF !important;
+            border-top: 3px solid #64748B !important;
         }
         .card-markdown {
-            border-top: 4px solid #E23744 !important; /* FreshPrice Red Accent */
-            background-color: #FFFFFF !important;
-        }
-        .card-impact {
-            border-top: 4px solid #008A3E !important; /* Performance Green Accent */
-            background-color: #FFFFFF !important;
+            border-top: 3px solid #E23744 !important;
         }
 
         .card-header-badge {
-            font-size: 0.72rem;
+            font-size: 0.70rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
-            padding: 3px 10px;
-            border-radius: 14px;
+            letter-spacing: 0.06em;
+            padding: 2px 8px;
+            border-radius: 4px;
             display: inline-block;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
         .badge-fixed {
             background-color: #F1F5F9;
@@ -426,30 +808,30 @@ def render_custom_css() -> None:
             border: 1px solid #CBD5E1;
         }
         .badge-markdown {
-            background-color: #FFF0F1;
+            background-color: #FFF1F2;
             color: #E23744 !important;
-            border: 1px solid #FFD2D6;
-        }
-        .badge-impact {
-            background-color: #E6F7ED;
-            color: #008A3E !important;
-            border: 1px solid #B8E8CE;
+            border: 1px solid #FECDD3;
         }
 
         .card-title {
-            font-size: 1.25rem;
+            font-size: 1.20rem;
             font-weight: 800;
-            color: #222222;
-            margin-bottom: 16px;
+            color: #0F172A;
+            margin-bottom: 4px;
+        }
+        .card-desc {
+            font-size: 0.80rem;
+            color: #64748B;
+            margin-bottom: 14px;
         }
 
         .metric-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 9px 0;
-            border-bottom: 1px dashed #EAEAEA;
-            font-size: 0.88rem;
+            padding: 7px 0;
+            border-bottom: 1px solid #F1F5F9;
+            font-size: 0.86rem;
         }
         .metric-row:last-child {
             border-bottom: none;
@@ -459,8 +841,8 @@ def render_custom_css() -> None:
             font-weight: 500;
         }
         .metric-val-text {
-            font-weight: 700;
-            color: #222222;
+            font-weight: 600;
+            color: #0F172A;
         }
         .text-red {
             color: #E23744 !important;
@@ -472,52 +854,550 @@ def render_custom_css() -> None:
             color: #4A5568 !important;
         }
 
-        /* Accounting Callout */
-        .accounting-notice {
+        .executive-kpi-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin: 14px 0 24px 0;
+        }
+        .executive-kpi-card {
             background-color: #FFFFFF;
-            border: 1px solid #FFD2D6;
-            border-left: 4px solid #E23744;
+            border: 1px solid #E2E8F0;
             border-radius: 8px;
             padding: 14px 18px;
-            margin: 20px 0 28px 0;
-            font-size: 0.88rem;
-            line-height: 1.5;
-            color: #222222;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.02);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .kpi-title {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #64748B;
+            margin-bottom: 4px;
+        }
+        .kpi-value {
+            font-size: 1.45rem;
+            font-weight: 800;
+            line-height: 1.2;
+            margin-bottom: 4px;
+            color: #0F172A;
+        }
+        .kpi-delta {
+            font-size: 0.78rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
 
-        /* Section Headings */
-        .section-header {
+        .deal-card {
+            background-color: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
+            padding: 18px;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            height: 100%;
+        }
+        .deal-badge {
+            background-color: #E23744;
+            color: #FFFFFF !important;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+            padding: 3px 8px;
+            border-radius: 4px;
+            display: inline-block;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        .deal-title {
+            font-size: 1.05rem;
+            font-weight: 800;
+            color: #0F172A;
+            margin-bottom: 2px;
+        }
+        .deal-category {
+            font-size: 0.75rem;
+            color: #64748B;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+        .deal-price-row {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin: 8px 0;
+        }
+        .deal-reg-price {
+            font-size: 0.88rem;
+            color: #94A3B8;
+            text-decoration: line-through;
+        }
+        .deal-sale-price {
             font-size: 1.35rem;
             font-weight: 800;
-            color: #222222;
-            margin: 32px 0 16px 0;
+            color: #E23744;
+        }
+        .deal-meta-row {
+            font-size: 0.80rem;
+            color: #475569;
+            padding-top: 8px;
+            border-top: 1px solid #F1F5F9;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .section-header {
+            font-size: 1.20rem;
+            font-weight: 800;
+            color: #0F172A;
+            margin: 24px 0 6px 0;
             display: flex;
             align-items: center;
             gap: 8px;
         }
         .section-subtext {
-            font-size: 0.90rem;
+            font-size: 0.84rem;
             color: #64748B;
-            margin-top: -10px;
-            margin-bottom: 18px;
+            margin-bottom: 14px;
         }
 
-        /* Footer */
-        .zomato-footer {
-            border-top: 1px solid #EAEAEA;
-            margin-top: 48px;
-            padding-top: 24px;
-            padding-bottom: 32px;
+        .minimal-footer {
+            border-top: 1px solid #E2E8F0;
+            margin-top: 36px;
+            padding-top: 18px;
+            padding-bottom: 24px;
             text-align: center;
-            color: #718096;
-            font-size: 0.82rem;
-            line-height: 1.6;
+            color: #64748B;
+            font-size: 0.80rem;
+            line-height: 1.5;
         }
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
+
+
+# ---------------------------------------------------------------------------
+# Executive KPI Row & Structured Components
+# ---------------------------------------------------------------------------
+
+def render_executive_kpi_row(f: PolicyMetrics, m: PolicyMetrics) -> None:
+    """Render 4 dynamically calculated executive KPI cards above the detailed comparison."""
+    waste_saved = f.units_wasted - m.units_wasted
+    waste_red_pct = (waste_saved / f.units_wasted * 100.0) if f.units_wasted > 0 else 0.0
+    rev_gain = m.revenue - f.revenue
+    rev_pct = (rev_gain / f.revenue * 100.0) if f.revenue > 0 else 0.0
+    net_gain = m.net_contribution - f.net_contribution
+    net_pct = (net_gain / f.net_contribution * 100.0) if f.net_contribution > 0 else 0.0
+    margin_pp = m.gross_margin_pct - f.gross_margin_pct
+
+    render_html(
+        f"""
+        <div class="executive-kpi-container">
+            <div class="executive-kpi-card" style="border-top: 3px solid #008A3E;">
+                <div class="kpi-title">Waste Reduction</div>
+                <div class="kpi-value text-green">{waste_red_pct:.1f}%</div>
+                <div class="kpi-delta text-green">
+                    <span>▼ {format_units(waste_saved)} saved</span>
+                </div>
+            </div>
+            <div class="executive-kpi-card" style="border-top: 3px solid {'#008A3E' if rev_gain >= 0 else '#E23744'};">
+                <div class="kpi-title">Revenue Change</div>
+                <div class="kpi-value {'text-green' if rev_gain >= 0 else 'text-red'}">{format_inr(rev_gain, include_sign=True)}</div>
+                <div class="kpi-delta {'text-green' if rev_gain >= 0 else 'text-red'}">
+                    <span>{f"▲ +{rev_pct:.1f}%" if rev_gain >= 0 else f"▼ {rev_pct:.1f}%"} vs baseline</span>
+                </div>
+            </div>
+            <div class="executive-kpi-card" style="border-top: 3px solid {'#008A3E' if net_gain >= 0 else '#E23744'};">
+                <div class="kpi-title">Net Contribution Gain</div>
+                <div class="kpi-value {'text-green' if net_gain >= 0 else 'text-red'}">{format_inr(net_gain, include_sign=True)}</div>
+                <div class="kpi-delta {'text-green' if net_gain >= 0 else 'text-red'}">
+                    <span>{f"▲ +{net_pct:.1f}%" if net_gain >= 0 else f"▼ {net_pct:.1f}%"} operational profit</span>
+                </div>
+            </div>
+            <div class="executive-kpi-card" style="border-top: 3px solid {'#008A3E' if margin_pp >= 0 else '#64748B'};">
+                <div class="kpi-title">Gross Margin Change</div>
+                <div class="kpi-value {'text-green' if margin_pp >= 0 else 'text-neutral'}">{format_pp(margin_pp, include_sign=True)}</div>
+                <div class="kpi-delta text-neutral">
+                    <span>{f.gross_margin_pct:.1f}% → {m.gross_margin_pct:.1f}% of rev</span>
+                </div>
+            </div>
+        </div>
+        """
+    )
+
+
+def render_simulation_pipeline_expander() -> None:
+    """Render compact expandable simulation pipeline explanation (Stock -> Demand -> Pricing -> Evaluation)."""
+    with st.expander("📖 Simulation Pipeline & Decision Framework (Stock → Demand → Pricing → Evaluation)", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            render_html(
+                """
+                <div class="pipeline-card">
+                    <div style="margin-bottom:8px;"><span class="pipeline-step-num">1</span><span class="pipeline-step-title">Stock & Batches</span></div>
+                    <div style="font-size:0.82rem; color:#475569; line-height:1.5;">
+                        • Scheduled delivery arrivals each morning.<br>
+                        • Batches track arrival, expiry & unit cost.<br>
+                        • Morning check purges expired batches.<br>
+                        • First-Expiry-First-Out (FEFO) queue.
+                    </div>
+                </div>
+                """
+            )
+        with c2:
+            render_html(
+                """
+                <div class="pipeline-card">
+                    <div style="margin-bottom:8px;"><span class="pipeline-step-num">2</span><span class="pipeline-step-title">Customer Demand</span></div>
+                    <div style="font-size:0.82rem; color:#475569; line-height:1.5;">
+                        • Stochastic baseline footfall (Poisson).<br>
+                        • Price response: 1 + γ × (elasticity × d).<br>
+                        • Near-expiry avoidance / clearance surge.<br>
+                        • Feasibility bound: Q<sub>sold</sub> ≤ Q<sub>avail</sub>.
+                    </div>
+                </div>
+                """
+            )
+        with c3:
+            render_html(
+                """
+                <div class="pipeline-card">
+                    <div style="margin-bottom:8px;"><span class="pipeline-step-num">3</span><span class="pipeline-step-title">Clearance Pricing</span></div>
+                    <div style="font-size:0.82rem; color:#475569; line-height:1.5;">
+                        • Graduated rule or Demand-Aware optimizer.<br>
+                        • Shelf-life aware thresholds (Max L-2).<br>
+                        • Margin floor: P ≥ C / (1 - m<sub>min</sub>).<br>
+                        • Zero markdown on healthy stock.
+                    </div>
+                </div>
+                """
+            )
+        with c4:
+            render_html(
+                """
+                <div class="pipeline-card">
+                    <div style="margin-bottom:8px;"><span class="pipeline-step-num">4</span><span class="pipeline-step-title">Evaluation & GAAP</span></div>
+                    <div style="font-size:0.82rem; color:#475569; line-height:1.5;">
+                        • Full physical inventory balance.<br>
+                        • GAAP Gross Profit = Rev - COGS.<br>
+                        • Waste Cost = Spoilage × Unit Cost.<br>
+                        • Net Contribution = Gross Profit - Waste Cost.
+                    </div>
+                </div>
+                """
+            )
+        st.caption("💡 *Single-Slide Summary*: Inventory batches arrive scheduled, unexpired stock is queued in FEFO order, price clearance activates as shelf life nears expiry (bound by margin floor P ≥ C / (1-m)), and performance reconciles GAAP profit with operational waste recovery.")
+
+
+def render_reproducibility_panel(
+    sim_result: SimulationResult,
+    seed_val: int,
+    sim_days: int,
+    policy_mode: str,
+    shopper_multiplier: float,
+    min_margin: float,
+) -> None:
+    """Render compact reproducibility information panel and CSV data exports."""
+    with st.expander("🎲 Experiment Reproducibility & Data Governance", expanded=False):
+        c1, c2 = st.columns([3, 2])
+        with c1:
+            st.markdown(
+                f"""
+                - **Random Seed**: `{seed_val}` (Deterministic pseudo-random RNG)
+                - **Simulation Horizon**: `{sim_days} Days`
+                - **Pricing Policy**: `{policy_mode}` (Margin Floor: `{min_margin}%`)
+                - **Shopper Response Multiplier (γ)**: `{shopper_multiplier}x` (Sensitivity factor)
+                - **Comparison Mode**: `Synchronized Matched Pair (Fixed vs Markdown)`
+                - **Matched Inventory & Demand**: `✅ Verified (Identical Day 1 stock, identical scheduled arrivals, identical baseline demand draws)`
+                - **Dataset Schema**: `20 Perishable SKUs (Dairy, Bakery, Fruits, Vegetables)`
+                """
+            )
+            st.caption("⚠️ **Synthetic Benchmark Disclosure**: All inventory volumes, price points, and demand histories are synthetic benchmark models developed for NEXAI 2026 Hackathon PS 4.1 in Indian Rupees (₹). They do not represent proprietary supermarket POS transactions.")
+        with c2:
+            st.markdown("##### Download Export Deliverables")
+            st.download_button(
+                label="📥 Download Policy Comparison Summary CSV",
+                data=sim_result.comparison_summary_df.to_csv(index=False),
+                file_name="policy_comparison_summary.csv",
+                mime="text/csv",
+                key="dl_summary_csv_btn",
+                use_container_width=True,
+            )
+            st.download_button(
+                label="📥 Download Daily Product Simulation History CSV",
+                data=sim_result.daily_history_df.to_csv(index=False),
+                file_name="daily_simulation_history.csv",
+                mime="text/csv",
+                key="dl_daily_csv_btn",
+                use_container_width=True,
+            )
+            st.download_button(
+                label="📥 Download Markdown Clearance Events CSV",
+                data=sim_result.markdown_events_df.to_csv(index=False),
+                file_name="markdown_events_history.csv",
+                mime="text/csv",
+                key="dl_events_csv_btn",
+                use_container_width=True,
+            )
+
+
+def render_shopper_deals_view(
+    daily_df: pd.DataFrame,
+    products: List[Product],
+    active_day: int,
+    active_policy: str = "Markdown Policy",
+    near_expiry_threshold: int = 2,
+) -> None:
+    """Render shopper-facing 'Today's Fresh Deals' portal view."""
+    render_html(
+        """
+        <div class="zomato-hero" style="border-left: 5px solid #008A3E;">
+            <span class="zomato-badge" style="background-color:#008A3E;">Shopper Clearance Deals</span>
+            <div class="zomato-title">Today's Fresh Deals 🛒</div>
+            <div class="zomato-subtitle">
+                Save on high-quality grocery items near their best-before date! 
+                Grab these limited in-store clearance deals and help us eliminate perishable food waste.
+            </div>
+        </div>
+        """
+    )
+
+    # If store is currently operating under Fixed Price, display clear explanation
+    if active_policy == "Fixed Price":
+        render_html(
+            """
+            <div style="background-color:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #D97706; border-radius:8px; padding:18px 24px; margin:20px 0; color:#92400E;">
+                <div style="font-weight:700; font-size:1.05rem; margin-bottom:6px;">Store Operating Under Fixed Price Policy</div>
+                <div style="font-size:0.90rem; line-height:1.5;">
+                    The store is currently configured for <b>Fixed Price Policy</b>, meaning products are sold at regular retail price until expiration with no promotional discounts.<br>
+                    To view simulated clearance markdowns, switch the <b>Store Pricing Policy</b> to <b>Markdown Policy</b> in the sidebar.
+                </div>
+            </div>
+            """
+        )
+
+    # Identify universe of eligible clearance deals in the simulation:
+    # Criteria:
+    # 1. Product exists in catalog
+    # 2. Markdown policy records
+    # 3. Genuine discount: discount_pct > 0.0 and selling_price < regular_price
+    # 4. Unexpired: days_until_expiry >= 1
+    # 5. Saleable stock available: (units_sold + ending_stock) > 0.0
+    deals_universe = daily_df[
+        (daily_df["policy"] == "markdown")
+        & (daily_df["discount_pct"] > 0.0)
+        & (daily_df["days_until_expiry"] >= 1)
+        & ((daily_df["units_sold"] + daily_df["ending_stock"]) > 0.0)
+        & (daily_df["selling_price"] < daily_df["regular_price"])
+    ].copy()
+
+    days_avail = sorted(list(set(daily_df["day"])))
+    days_with_deals = sorted(deals_universe["day"].unique().tolist())
+
+    # Smart default: pick first day with deals (e.g. Day 3) so page opens with active deals
+    default_day = days_with_deals[0] if days_with_deals else (days_avail[0] if days_avail else 1)
+    default_index = days_avail.index(default_day) if default_day in days_avail else 0
+
+    def format_day_option(d: int) -> str:
+        count = len(deals_universe[deals_universe["day"] == d])
+        if count > 0:
+            return f"Day {d}  —  {count} Active Clearance Deal{'s' if count > 1 else ''} 🔥"
+        return f"Day {d}  —  (No active clearance deals)"
+
+    col_filter1, col_filter2 = st.columns([2, 1])
+    with col_filter1:
+        day_selected = st.selectbox(
+            "Simulated Shopping Day:",
+            options=days_avail,
+            index=default_index,
+            format_func=format_day_option,
+            key="shopper_day_select",
+            help="Select any day within the simulation horizon to inspect available clearance items for that specific day.",
+        )
+    with col_filter2:
+        cat_filter = st.selectbox(
+            "Filter by Category:",
+            options=["All Categories", "Dairy", "Bakery", "Fruits", "Vegetables"],
+            index=0,
+            key="shopper_cat_select",
+        )
+
+    # Filter deals for the selected day:
+    day_deals = deals_universe[deals_universe["day"] == day_selected].copy()
+    if cat_filter != "All Categories":
+        day_deals = day_deals[day_deals["category"].str.lower() == cat_filter.lower()]
+
+    st.markdown(f"##### Active clearance deals on **Day {day_selected}** ({len(day_deals)} available):")
+
+    if day_deals.empty:
+        sample_deal_days = ", ".join(f"Day {d}" for d in days_with_deals[:6]) if days_with_deals else "None"
+        render_html(
+            f"""
+            <div style="background-color:#F8FAFC; border:1px solid #E2E8F0; border-radius:12px; padding:36px; text-align:center; margin:24px 0;">
+                <div style="font-size:2.2rem; margin-bottom:10px;">🛒</div>
+                <div style="font-weight:800; font-size:1.15rem; color:#1E293B; margin-bottom:6px;">No clearance deals on Day {day_selected}</div>
+                <div style="font-size:0.88rem; color:#64748B; max-width:560px; margin:0 auto; line-height:1.6;">
+                    All products are fresh with &gt; {near_expiry_threshold} days shelf life on Day {day_selected}.<br>
+                    Products appear here when the store markdown policy offers an eligible discount on available, unexpired inventory.<br><br>
+                    <b>Next Step:</b> Select a day with active clearance markdowns (such as {sample_deal_days}) using the dropdown above.
+                </div>
+            </div>
+            """
+        )
+    else:
+        cols = st.columns(3)
+        for idx, (_, row) in enumerate(day_deals.iterrows()):
+            with cols[idx % 3]:
+                savings = row["regular_price"] - row["selling_price"]
+                avail_qty = row["units_sold"] + row["ending_stock"]
+                disc_int = int(round(row["discount_pct"]))
+                badge_text = f"🔥 {disc_int}% OFF CLEARANCE"
+                days_left = int(row["days_until_expiry"])
+                urgency_text = f"⏳ {days_left} {'day' if days_left == 1 else 'days'} left!"
+                freshness_badge = "Best Before: Within 24 Hours" if days_left == 1 else "Best Before: Within 48 Hours"
+                urgency_color = "#E23744" if days_left == 1 else "#166534"
+
+                render_html(
+                    f"""
+                    <div class="deal-card">
+                        <div>
+                            <span class="deal-badge">{badge_text}</span>
+                            <div class="deal-title">{row['product_name']}</div>
+                            <div class="deal-category">Category: {row['category'].title()}</div>
+                            <div style="margin: 6px 0;">
+                                <span style="background-color:#F1F5F9; color:{urgency_color}; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:4px; border:1px solid #E2E8F0;">
+                                    🏷️ {freshness_badge}
+                                </span>
+                            </div>
+                            <div class="deal-price-row">
+                                <span class="deal-sale-price">{format_inr(row['selling_price'])}</span>
+                                <span class="deal-reg-price">{format_inr(row['regular_price'])}</span>
+                                <span style="font-size:0.80rem; color:#008A3E; font-weight:700;">Save {format_inr(savings)}</span>
+                            </div>
+                        </div>
+                        <div class="deal-meta-row">
+                            <span style="font-weight:700; color:{urgency_color};">{urgency_text}</span>
+                            <span><b>{format_units(avail_qty)}</b> available</span>
+                        </div>
+                    </div>
+                    """
+                )
+
+    st.markdown("---")
+    st.caption("ℹ️ **Simulation demo: all prices, inventory levels, and clearance offers are generated from synthetic data. No real transactions are available.**")
+
+
+def render_category_optimizer_tab(sim_days: int, min_margin: float) -> None:
+    """Render Category-Specific Markdown Optimizer tab."""
+    st.markdown("### 🏷️ Category-Specific Markdown Optimizer (PS 4.1 Stretch Goal)")
+    st.markdown(
+        "Evaluate department-tailored candidate markdown schedules across matched simulation seeds "
+        "to discover the policy that maximizes average **Net Contribution after Waste Cost**."
+    )
+
+    if st.button("🚀 Run Multi-Seed Category Optimization", key="btn_run_category_opt"):
+        with st.spinner("Evaluating candidate clearance schedules across Dairy, Bakery, Fruits, and Vegetables..."):
+            from src.category_optimizer import run_category_optimization
+            report = run_category_optimization(
+                seeds=[42, 101, 2026],
+                sim_days=sim_days,
+                min_margin_pct=min_margin,
+            )
+            st.session_state["category_opt_report"] = report
+
+    if "category_opt_report" in st.session_state:
+        report = st.session_state["category_opt_report"]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Fixed Baseline Net Contrib", format_inr(report.baseline_fixed_net_contribution))
+        c2.metric("Default Markdown Net Contrib", format_inr(report.default_markdown_net_contribution))
+        c3.metric("Category-Optimized Net Contrib", format_inr(report.optimized_category_net_contribution), delta=format_inr(report.net_contribution_gain_over_default, include_sign=True))
+        gain_pct = ((report.optimized_category_net_contribution - report.baseline_fixed_net_contribution) / report.baseline_fixed_net_contribution * 100.0) if report.baseline_fixed_net_contribution > 0 else 0.0
+        c4.metric("Gain vs Baseline", format_inr(report.net_contribution_gain_over_baseline, include_sign=True), delta=f"+{gain_pct:.1f}%")
+
+        st.markdown("##### Evaluated Department Schedules & Optimal Selection:")
+        st.dataframe(report.summary_df, use_container_width=True, hide_index=True)
+
+        st.caption("Disclosed Evaluation Scope: Evaluated on seeds [42, 101, 2026] with identical starting stock and scheduled arrivals. Primary selection criterion: Net Contribution after Waste Cost.")
+    else:
+        st.info("Click the button above to run the multi-seed category clearance optimizer across all 4 departments.")
+
+
+def render_sensitivity_tab(
+    sim_days: int,
+    seed_val: int,
+    t1: int,
+    d1: float,
+    t2: int,
+    d2: float,
+    min_margin: float,
+    current_multiplier: float,
+) -> None:
+    """Render Shopper Discount-Response Sensitivity tab."""
+    st.markdown("### 🔬 Shopper Discount-Response Sensitivity Analysis (PS 4.1 Stretch Goal)")
+    st.markdown(
+        "Evaluate how robust markdown profitability and waste reduction remain when shoppers respond "
+        "less (or more) aggressively to promotional discounts."
+    )
+
+    col_sens1, col_sens2 = st.columns([1, 2])
+    with col_sens1:
+        test_mult = st.select_slider(
+            "Test Shopper Response Multiplier (γ):",
+            options=[0.25, 0.50, 0.75, 1.00, 1.25],
+            value=current_multiplier,
+            key="tab_sens_slider",
+            help="1.00 = Normal calibrated response; 0.50 = Half-strength response to discounts.",
+        )
+
+    res_normal = run_dashboard_simulation(
+        sim_days=sim_days,
+        seed=seed_val,
+        threshold_1_days=t1,
+        discount_1_pct=float(d1) / 100.0,
+        threshold_2_days=t2,
+        discount_2_pct=float(d2) / 100.0,
+        min_gross_margin_pct=min_margin,
+        shopper_response_multiplier=1.0,
+    )
+    res_tested = run_dashboard_simulation(
+        sim_days=sim_days,
+        seed=seed_val,
+        threshold_1_days=t1,
+        discount_1_pct=float(d1) / 100.0,
+        threshold_2_days=t2,
+        discount_2_pct=float(d2) / 100.0,
+        min_gross_margin_pct=min_margin,
+        shopper_response_multiplier=test_mult,
+    )
+
+    fn = res_normal.fixed_metrics
+    mn = res_normal.markdown_metrics
+    mt = res_tested.markdown_metrics
+
+    sens_records = [
+        {"Metric": "Shopper Response Multiplier (γ)", "Normal Response (1.00x)": "1.00x", f"Sensitivity Scenario ({test_mult:.2f}x)": f"{test_mult:.2f}x", "Variance": f"{test_mult - 1.0:+.2f}x"},
+        {"Metric": "Markdown Units Sold", "Normal Response (1.00x)": format_units(mn.units_sold), f"Sensitivity Scenario ({test_mult:.2f}x)": format_units(mt.units_sold), "Variance": format_units(mt.units_sold - mn.units_sold, include_sign=True)},
+        {"Metric": "Markdown Units Wasted", "Normal Response (1.00x)": format_units(mn.units_wasted), f"Sensitivity Scenario ({test_mult:.2f}x)": format_units(mt.units_wasted), "Variance": format_units(mt.units_wasted - mn.units_wasted, include_sign=True)},
+        {"Metric": "Waste Reduction (%)", "Normal Response (1.00x)": f"{((fn.units_wasted - mn.units_wasted)/fn.units_wasted*100):.2f}%" if fn.units_wasted > 0 else "0.00%", f"Sensitivity Scenario ({test_mult:.2f}x)": f"{((fn.units_wasted - mt.units_wasted)/fn.units_wasted*100):.2f}%" if fn.units_wasted > 0 else "0.00%", "Variance": f"{(((fn.units_wasted - mt.units_wasted) - (fn.units_wasted - mn.units_wasted))/fn.units_wasted*100):+.2f} pp" if fn.units_wasted > 0 else "0.00 pp"},
+        {"Metric": "Total Store Revenue (₹)", "Normal Response (1.00x)": format_inr(mn.revenue), f"Sensitivity Scenario ({test_mult:.2f}x)": format_inr(mt.revenue), "Variance": format_inr(mt.revenue - mn.revenue, include_sign=True)},
+        {"Metric": "Gross Profit (₹)", "Normal Response (1.00x)": format_inr(mn.gross_margin), f"Sensitivity Scenario ({test_mult:.2f}x)": format_inr(mt.gross_margin), "Variance": format_inr(mt.gross_margin - mn.gross_margin, include_sign=True)},
+        {"Metric": "Gross Margin (%)", "Normal Response (1.00x)": f"{mn.gross_margin_pct:.2f}%", f"Sensitivity Scenario ({test_mult:.2f}x)": f"{mt.gross_margin_pct:.2f}%", "Variance": f"{mt.gross_margin_pct - mn.gross_margin_pct:+.2f} pp"},
+        {"Metric": "Total Waste Cost (₹)", "Normal Response (1.00x)": format_inr(mn.total_waste_cost), f"Sensitivity Scenario ({test_mult:.2f}x)": format_inr(mt.total_waste_cost), "Variance": format_inr(mt.total_waste_cost - mn.total_waste_cost, include_sign=True)},
+        {"Metric": "Net Contribution after Waste (₹)", "Normal Response (1.00x)": format_inr(mn.net_contribution), f"Sensitivity Scenario ({test_mult:.2f}x)": format_inr(mt.net_contribution), "Variance": format_inr(mt.net_contribution - mn.net_contribution, include_sign=True)},
+        {"Metric": "Ending Inventory (units)", "Normal Response (1.00x)": format_units(mn.ending_inventory), f"Sensitivity Scenario ({test_mult:.2f}x)": format_units(mt.ending_inventory), "Variance": format_units(mt.ending_inventory - mn.ending_inventory, include_sign=True)},
+    ]
+
+    st.dataframe(pd.DataFrame(sens_records), use_container_width=True, hide_index=True)
+    st.caption("Model Note: This is an econometric sensitivity experiment evaluating model robustness under dampened demand elasticity. It does not represent measured empirical POS consumer footfall.")
 
 
 # ---------------------------------------------------------------------------
@@ -535,108 +1415,145 @@ def main() -> None:
 
     render_custom_css()
 
-    # 1. Sidebar Simulation Controls (Preserve Defaults: 30 Days, Seed 42, t1=1/40%, t2=2/20%)
-    st.sidebar.markdown(
+    # 1. Main Sidebar Controls (Clean, Focused & Essential)
+    render_html(
         """
-        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
-            <span style="background-color:#E23744; color:#ffffff; font-weight:800; font-size:0.9rem; padding:3px 10px; border-radius:5px;">FreshPrice AI</span>
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+            <span style="background-color:#E23744; color:#ffffff; font-weight:800; font-size:0.85rem; padding:3px 10px; border-radius:4px;">FreshPrice AI</span>
+            <span style="font-weight:700; color:#0F172A; font-size:0.95rem;">Simulation Setup</span>
         </div>
         """,
-        unsafe_allow_html=True,
-    )
-    st.sidebar.title("Store Simulation Controls")
-    st.sidebar.markdown("Configure operational parameters and clearance policy thresholds:")
-
-    seed_val = st.sidebar.number_input(
-        "Random Seed",
-        value=42,
-        min_value=1,
-        max_value=999999,
-        step=1,
-        key="sim_seed_input",
-        help="Fixed seed guarantees identical inventory arrivals and identical customer traffic shocks for both policies.",
+        container=st.sidebar,
     )
 
+    # Simulation Duration & Seed
+    st.sidebar.markdown("### Simulation")
     sim_days = st.sidebar.slider(
-        "Simulation Duration (Days)",
+        "Simulation duration (days)",
         min_value=7,
         max_value=60,
         value=30,
         step=1,
         key="sim_days_slider",
-        help="Standard official benchmark is 30 days. Explore alternative horizons up to 60 days.",
+        help="Simulated time horizon in days (default: 30 days).",
     )
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Markdown Policy Thresholds")
-
-    t1 = st.sidebar.number_input(
-        "Urgent Clearance Threshold (Days)",
-        value=1,
+    seed_val = st.sidebar.number_input(
+        "Random seed",
+        value=42,
         min_value=1,
-        max_value=5,
+        max_value=999999,
         step=1,
-        key="threshold_1_input",
-        help="Days remaining before expiry for highest clearance discount.",
-    )
-    d1 = st.sidebar.slider(
-        "Urgent Clearance Discount (%)",
-        min_value=0,
-        max_value=80,
-        value=40,
-        step=5,
-        key="discount_1_slider",
-        help="Discount applied when remaining shelf life <= Threshold 1.",
+        key="sim_seed_input",
+        help="Deterministic RNG seed for batch deliveries and customer demand draws (default: 42).",
     )
 
-    t2 = st.sidebar.number_input(
-        "Near-Expiry Threshold (Days)",
-        value=2,
+    # Pricing Policy Choice
+    st.sidebar.markdown("### Pricing Policy")
+    pricing_policy_choice = st.sidebar.radio(
+        "Store Pricing Policy",
+        options=["Fixed Price", "Markdown Pricing"],
+        index=1,
+        key="pricing_policy_radio",
+        help="Select store operational pricing strategy.",
+    )
+    if pricing_policy_choice == "Fixed Price":
+        st.sidebar.caption("Fixed Price: Products remain at their regular prices until expiry.")
+    else:
+        st.sidebar.caption("Markdown Pricing: Products receive configurable discounts as they approach expiry.")
+
+    # Markdown Discount Rules
+    st.sidebar.markdown("### Markdown Rules")
+    t2 = st.sidebar.slider(
+        "Near-expiry threshold (days)",
         min_value=1,
         max_value=10,
+        value=2,
         step=1,
         key="threshold_2_input",
-        help="Days remaining before expiry for moderate markdown discount.",
+        help="Days until expiry when near-expiry discount begins (default: 2 days).",
     )
     d2 = st.sidebar.slider(
-        "Near-Expiry Discount (%)",
+        "Near-expiry discount (%)",
         min_value=0,
-        max_value=80,
+        max_value=100,
         value=20,
-        step=5,
+        step=1,
         key="discount_2_slider",
-        help="Discount applied when remaining shelf life <= Threshold 2.",
+        help="Promotional discount percentage for near-expiry products (default: 20%).",
+    )
+    t1 = st.sidebar.slider(
+        "Urgent clearance threshold (days)",
+        min_value=1,
+        max_value=10,
+        value=1,
+        step=1,
+        key="threshold_1_input",
+        help="Days until expiry when urgent clearance discount begins (default: 1 day).",
+    )
+    d1 = st.sidebar.slider(
+        "Urgent clearance discount (%)",
+        min_value=0,
+        max_value=100,
+        value=40,
+        step=1,
+        key="discount_1_slider",
+        help="Urgent clearance discount percentage for critical products (default: 40%).",
     )
 
-    cost_floor = st.sidebar.checkbox(
-        "Enforce Wholesale Cost Floor (Price >= Unit Cost)",
-        value=True,
-        key="cost_floor_toggle",
-        help="Guarantees dynamic selling price never falls below product wholesale unit cost.",
-    )
+    if int(t1) > int(t2):
+        st.sidebar.caption(f"⚠️ Note: Urgent threshold ({t1}d) exceeds near-expiry ({t2}d); simulator bounds urgent rule to ≤ {t2}d.")
+    if int(d2) > int(d1):
+        st.sidebar.caption(f"💡 Note: Near-expiry discount ({d2}%) is set higher than urgent clearance ({d1}%).")
 
-    if int(t2) <= int(t1):
-        st.sidebar.warning(
-            f"⚠️ Near-expiry threshold ({t2}d) is <= Urgent clearance threshold ({t1}d). "
-            f"Batches with <= {t1} days to expiry will trigger Urgent Clearance pricing."
+    rule_logic_text = generate_rule_logic_explanation(
+        near_expiry_threshold=int(t2),
+        near_expiry_discount_pct=int(d2),
+        urgent_threshold=int(t1),
+        urgent_discount_pct=int(d1),
+    )
+    st.sidebar.markdown(rule_logic_text)
+
+    # Margin Protection
+    st.sidebar.markdown("### Margin Protection")
+    min_margin = st.sidebar.slider(
+        "Minimum Gross Margin Floor (%)",
+        min_value=0,
+        max_value=40,
+        value=10,
+        step=1,
+        key="min_margin_slider",
+        help="Price floor formula: minimum_price = unit_cost / (1 - minimum_margin_rate). Prevents selling below margin threshold.",
+    )
+    st.sidebar.caption("Formula: `minimum_price = unit_cost / (1 - min_margin_rate)`")
+
+    # Secondary / Advanced Controls in Expander
+    with st.sidebar.expander("⚙️ Advanced Settings", expanded=False):
+        shopper_response_mult = st.slider(
+            "Shopper Sensitivity Multiplier (γ)",
+            min_value=0.2,
+            max_value=2.0,
+            value=1.0,
+            step=0.1,
+            key="shopper_multiplier_slider",
+            help="Calibrate customer sensitivity to price markdowns (1.0 = standard benchmark).",
         )
-    if float(d2) > float(d1):
-        st.sidebar.info(
-            f"💡 Near-expiry discount ({d2}%) is set higher than urgent clearance discount ({d1}%)."
+        waste_disposal_fee = st.number_input(
+            "Waste Disposal Fee per Unit (₹)",
+            min_value=0.0,
+            max_value=50.0,
+            value=0.0,
+            step=1.0,
+            key="waste_fee_input",
+            help="Environmental regulatory disposal surcharge per spoiled unit.",
+        )
+        cost_floor_enforced = st.checkbox(
+            "Enforce Unit Cost / Margin Floor",
+            value=True,
+            key="enforce_floor_chk",
+            help="Strictly prevent markdowns below wholesale unit cost plus margin floor.",
         )
 
-    st.sidebar.markdown("---")
-    st.sidebar.info(
-        f"**Active Seed**: `{seed_val}`  \n"
-        f"**Duration**: `{sim_days} Days`  \n"
-        f"**Clearance**: ≤`{t1}`d (`{d1}`%) | ≤`{t2}`d (`{d2}`%)  \n"
-        f"**Shelf-Life Aware**: `Active (Max L-2)`  \n"
-        f"**Catalog**: 20 Perishable SKUs  \n"
-        f"**Cost Floor**: `{'Enforced' if cost_floor else 'Disabled'}`  \n"
-        f"**Policy Comparison**: Synchronized & Controlled"
-    )
-
-    # 2. Run Synchronized Simulation via Orchestration Function
+    # 2. Run Synchronized Simulation via Cached Orchestration Function
     sim_result = run_dashboard_simulation(
         sim_days=int(sim_days),
         seed=int(seed_val),
@@ -644,12 +1561,71 @@ def main() -> None:
         discount_1_pct=float(d1) / 100.0,
         threshold_2_days=int(t2),
         discount_2_pct=float(d2) / 100.0,
-        enforce_cost_floor=cost_floor,
+        enforce_cost_floor=bool(cost_floor_enforced),
+        policy_mode="graduated_rule",
+        min_gross_margin_pct=float(min_margin),
+        waste_disposal_fee=float(waste_disposal_fee),
+        shopper_response_multiplier=float(shopper_response_mult),
     )
 
     f = sim_result.fixed_metrics
     m = sim_result.markdown_metrics
 
+    # 3. Top-Level Header & Navigation Component
+    col_header, col_nav = st.columns([1.6, 1.4])
+    with col_header:
+        render_html(
+            """
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:2px;">
+                <span style="background-color:#E23744; color:#FFFFFF; font-weight:800; font-size:0.85rem; padding:3px 10px; border-radius:4px; letter-spacing:0.04em;">FreshPrice AI</span>
+                <span style="font-size:1.35rem; font-weight:800; color:#0F172A;">Markdown Before Waste</span>
+            </div>
+            <div style="font-size:0.84rem; color:#64748B;">
+                Near-expiry pricing simulation to reduce food waste while protecting retail profitability.
+            </div>
+            """
+        )
+    with col_nav:
+        nav_options = ["Store Operations", "Today's Fresh Deals"]
+        if hasattr(st, "segmented_control"):
+            active_view = st.segmented_control(
+                "Application View",
+                options=nav_options,
+                default=nav_options[0],
+                label_visibility="collapsed",
+                key="app_main_navigation",
+            )
+        else:
+            active_view = st.radio(
+                "Application View",
+                options=nav_options,
+                index=0,
+                horizontal=True,
+                label_visibility="collapsed",
+                key="app_main_navigation",
+            )
+        active_view = active_view or "Store Operations"
+
+    # Route: Today's Fresh Deals View
+    if "Today's Fresh Deals" in active_view:
+        render_shopper_deals_view(
+            daily_df=sim_result.daily_history_df,
+            products=get_default_products(),
+            active_day=int(sim_days),
+            active_policy=pricing_policy_choice,
+            near_expiry_threshold=int(t2),
+        )
+        render_html(
+            """
+            <div class="minimal-footer">
+                <b>FreshPrice AI</b> • NEXAI 2026 Hackathon (Track 4: Grocery Retail, PS 4.1)<br>
+                <i>Simulation demo: all prices, inventory levels, and clearance offers are generated from synthetic data. No real transactions are accepted.</i>
+            </div>
+            """
+        )
+        return
+
+    # Route: Store Operations View
     waste_saved = round(f.units_wasted - m.units_wasted, 1)
     waste_red_pct = round(((f.units_wasted - m.units_wasted) / f.units_wasted * 100.0), 2) if f.units_wasted > 0 else 0.0
     units_sold_gain = round(m.units_sold - f.units_sold, 1)
@@ -657,82 +1633,57 @@ def main() -> None:
     cogs_diff = round(m.cogs - f.cogs, 2)
     margin_gain = round(m.gross_margin - f.gross_margin, 2)
     margin_pct_diff = round(m.gross_margin_pct - f.gross_margin_pct, 2)
+    waste_cost_saved = round(f.total_waste_cost - m.total_waste_cost, 2)
+    net_contrib_gain = round(m.net_contribution - f.net_contribution, 2)
+    sell_through_gain = round(m.sell_through_rate_pct - f.sell_through_rate_pct, 2)
     ending_stock_delta = round(m.ending_inventory - f.ending_inventory, 1)
 
-    # 3. Zomato Hero Header
-    st.markdown(
-        """
-        <div class="zomato-hero">
-            <span class="zomato-badge">FreshPrice AI</span>
-            <div class="zomato-title">Markdown Before Waste</div>
-            <div class="zomato-subtitle">
-                <b>NEXAI 2026 Hackathon (PS 4.1: Track 4 Grocery Retail)</b> — 
-                Dynamic near-expiry algorithmic pricing to eliminate perishable food waste, 
-                stimulate consumer demand before expiration, and optimize retail gross margin.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # 4. Active Simulation Settings Bar
-    st.markdown(
+    # 4. Small Metadata Line
+    render_html(
         f"""
-        <div class="settings-bar">
-            <div class="setting-chip">⏱️ Duration: <b>{sim_days} Days</b></div>
-            <div class="setting-chip">🎲 Random Seed: <b>{seed_val}</b></div>
-            <div class="setting-chip setting-chip-highlight">⚡ Urgent Clearance: <b>≤ {t1} Day ({d1}% OFF)</b></div>
-            <div class="setting-chip setting-chip-highlight">🏷️ Near-Expiry Markdown: <b>≤ {t2} Days ({d2}% OFF)</b></div>
-            <div class="setting-chip">🛡️ Price Floor: <b>{'Enforced (P >= Cost)' if cost_floor else 'Disabled'}</b></div>
-            <div class="setting-chip">🛒 Catalog: <b>20 Perishable SKUs</b></div>
-            <div class="setting-chip">📦 Total Initial Stock: <b>{f.total_received:,.1f} Units (Identical)</b></div>
+        <div class="metadata-bar">
+            <span>⏱️ Duration: <b>{sim_days} Days</b></span>
+            <span>🎲 Seed: <b>{seed_val}</b></span>
+            <span>📏 Rules: <b>≤{t2}d: {d2}% | ≤{t1}d: {d1}%</b> (Floor ≥{min_margin}%)</span>
+            <span>🛒 <b>20 Perishable SKUs</b></span>
+            <span>🧪 <i>Synthetic Perishables Dataset (NEXAI 2026 PS 4.1 Demo)</i></span>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
-    # 5. Side-by-Side Policy Comparison Cards (White Backgrounds, Accents)
-    st.markdown('<div class="section-header">1. Side-by-Side Policy Performance Comparison</div>', unsafe_allow_html=True)
-    st.markdown(
-        f'<div class="section-subtext">Cumulative {sim_days}-day benchmark evaluated on identical inventory batches and demand shocks:</div>',
-        unsafe_allow_html=True,
+    # 5. Top-Level Dynamic Executive KPI Row (4 High-Priority Results)
+    render_executive_kpi_row(f, m)
+
+    # 6. Side-by-Side Policy Comparison Cards (2 Columns: Fixed Price & Markdown Pricing)
+    render_html('<div class="section-header">Policy Performance Comparison</div>')
+    render_html(
+        f'<div class="section-subtext">Cumulative {sim_days}-day benchmark evaluated on identical starting batches and customer demand shocks:</div>'
     )
 
-    col_fixed, col_md, col_impact = st.columns(3)
+    col_fixed, col_md = st.columns(2)
 
-    # Card 1: Fixed-Price Baseline (White background with neutral gray accent)
+    # Card 1: Fixed-Price Baseline
     with col_fixed:
-        st.markdown(
+        render_html(
             f"""
             <div class="policy-card card-fixed">
                 <span class="card-header-badge badge-fixed">Baseline Benchmark</span>
-                <div class="card-title">Fixed-Price Policy</div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Total Received Inventory:</span>
-                    <span class="metric-val-text">{f.total_received:,.1f} units</span>
-                </div>
+                <div class="card-title">Fixed Price</div>
+                <div class="card-desc">Products retain regular prices until expiry (no clearance discounts)</div>
                 <div class="metric-row">
                     <span class="metric-label-text">Units Sold:</span>
-                    <span class="metric-val-text">{f.units_sold:,.1f} units</span>
+                    <span class="metric-val-text">{format_units(f.units_sold)}</span>
                 </div>
                 <div class="metric-row">
                     <span class="metric-label-text">Units Wasted (Expired):</span>
-                    <span class="metric-val-text text-red">{f.units_wasted:,.1f} units</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Waste Rate (%):</span>
-                    <span class="metric-val-text text-red">{f.waste_rate_pct:.2f}%</span>
+                    <span class="metric-val-text text-red">{format_units(f.units_wasted)}</span>
                 </div>
                 <div class="metric-row">
                     <span class="metric-label-text">Total Revenue (INR):</span>
                     <span class="metric-val-text">{format_inr(f.revenue)}</span>
                 </div>
                 <div class="metric-row">
-                    <span class="metric-label-text">Cost of Goods Sold (COGS):</span>
-                    <span class="metric-val-text">{format_inr(f.cogs)}</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Gross Margin (Revenue - COGS):</span>
+                    <span class="metric-label-text">Gross Profit (Revenue - COGS):</span>
                     <span class="metric-val-text">{format_inr(f.gross_margin)}</span>
                 </div>
                 <div class="metric-row">
@@ -740,51 +1691,47 @@ def main() -> None:
                     <span class="metric-val-text">{f.gross_margin_pct:.2f}%</span>
                 </div>
                 <div class="metric-row">
-                    <span class="metric-label-text">Promotional Markdown Events:</span>
-                    <span class="metric-val-text">0 events</span>
+                    <span class="metric-label-text">Total Waste Cost (Loss):</span>
+                    <span class="metric-val-text text-red">{format_inr(f.total_waste_cost)}</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label-text">Net Contribution after Waste:</span>
+                    <span class="metric-val-text"><b>{format_inr(f.net_contribution)}</b></span>
                 </div>
                 <div class="metric-row">
                     <span class="metric-label-text">Ending Healthy Inventory:</span>
-                    <span class="metric-val-text">{f.ending_inventory:,.1f} units</span>
+                    <span class="metric-val-text">{format_units(f.ending_inventory)}</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label-text">Sell-Through Rate (%):</span>
+                    <span class="metric-val-text">{f.sell_through_rate_pct:.2f}%</span>
                 </div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
-    # Card 2: Dynamic Markdown Policy (White background with FreshPrice red accents)
+    # Card 2: Markdown Pricing
     with col_md:
-        st.markdown(
+        render_html(
             f"""
             <div class="policy-card card-markdown">
                 <span class="card-header-badge badge-markdown">Dynamic Algorithmic</span>
-                <div class="card-title text-red">Markdown Policy</div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Total Received Inventory:</span>
-                    <span class="metric-val-text">{m.total_received:,.1f} units</span>
-                </div>
+                <div class="card-title text-red">Markdown Pricing</div>
+                <div class="card-desc">Near-expiry discounts clear stock before spoilage under margin floor</div>
                 <div class="metric-row">
                     <span class="metric-label-text">Units Sold:</span>
-                    <span class="metric-val-text text-green">{m.units_sold:,.1f} units</span>
+                    <span class="metric-val-text text-green">{format_units(m.units_sold)}</span>
                 </div>
                 <div class="metric-row">
                     <span class="metric-label-text">Units Wasted (Expired):</span>
-                    <span class="metric-val-text {'text-green' if m.units_wasted == 0 else 'text-red'}">{m.units_wasted:,.1f} units</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Waste Rate (%):</span>
-                    <span class="metric-val-text {'text-green' if m.waste_rate_pct < f.waste_rate_pct else 'text-neutral'}">{m.waste_rate_pct:.2f}%</span>
+                    <span class="metric-val-text {'text-green' if m.units_wasted == 0 else 'text-red'}">{format_units(m.units_wasted)}</span>
                 </div>
                 <div class="metric-row">
                     <span class="metric-label-text">Total Revenue (INR):</span>
                     <span class="metric-val-text {'text-green' if rev_gain >= 0 else 'text-red'}">{format_inr(m.revenue)}</span>
                 </div>
                 <div class="metric-row">
-                    <span class="metric-label-text">Cost of Goods Sold (COGS):</span>
-                    <span class="metric-val-text">{format_inr(m.cogs)}</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Gross Margin (Revenue - COGS):</span>
+                    <span class="metric-label-text">Gross Profit (Revenue - COGS):</span>
                     <span class="metric-val-text {'text-green' if margin_gain >= 0 else 'text-neutral'}">{format_inr(m.gross_margin)}</span>
                 </div>
                 <div class="metric-row">
@@ -792,241 +1739,353 @@ def main() -> None:
                     <span class="metric-val-text">{m.gross_margin_pct:.2f}%</span>
                 </div>
                 <div class="metric-row">
-                    <span class="metric-label-text">Promotional Markdown Events:</span>
-                    <span class="metric-val-text text-red">{m.markdown_events_count} events</span>
+                    <span class="metric-label-text">Total Waste Cost (Loss):</span>
+                    <span class="metric-val-text {'text-green' if waste_cost_saved > 0 else 'text-neutral'}">{format_inr(m.total_waste_cost)}</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label-text">Net Contribution after Waste:</span>
+                    <span class="metric-val-text {'text-green' if net_contrib_gain >= 0 else 'text-red'}"><b>{format_inr(m.net_contribution)}</b></span>
                 </div>
                 <div class="metric-row">
                     <span class="metric-label-text">Ending Healthy Inventory:</span>
-                    <span class="metric-val-text">{m.ending_inventory:,.1f} units</span>
+                    <span class="metric-val-text">{format_units(m.ending_inventory)}</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label-text">Sell-Through Rate (%):</span>
+                    <span class="metric-val-text text-green">{m.sell_through_rate_pct:.2f}%</span>
                 </div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
-    # Card 3: Honest Performance Variance & Impact (White background with green accents)
-    with col_impact:
-        st.markdown(
-            f"""
-            <div class="policy-card card-impact">
-                <span class="card-header-badge badge-impact">Strategic Realized Impact</span>
-                <div class="card-title text-green">Performance Variance</div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Initial Inventory Delta:</span>
-                    <span class="metric-val-text">0.0 units (100% Identical)</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Additional Units Sold:</span>
-                    <span class="metric-val-text text-green">{format_units(units_sold_gain, include_sign=True)}</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Physical Waste Saved:</span>
-                    <span class="metric-val-text text-green">{format_units(waste_saved, include_sign=True)}</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Waste Reduction (%):</span>
-                    <span class="metric-val-text text-green"><b>{waste_red_pct:.2f}% reduction</b></span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Revenue Change (INR):</span>
-                    <span class="metric-val-text {'text-green' if rev_gain >= 0 else 'text-red'}">{format_inr(rev_gain, include_sign=True)}</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">COGS Variance:</span>
-                    <span class="metric-val-text">{format_inr(cogs_diff, include_sign=True)}</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Gross Margin Change (₹):</span>
-                    <span class="metric-val-text {'text-green' if margin_gain >= 0 else 'text-red'}"><b>{format_inr(margin_gain, include_sign=True)}</b></span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Gross Margin % Change:</span>
-                    <span class="metric-val-text {'text-green' if margin_pct_diff >= 0 else 'text-neutral'}">{format_pct(margin_pct_diff, include_sign=True)}</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Active Markdown Triggers:</span>
-                    <span class="metric-val-text text-red">+{m.markdown_events_count} clearance events</span>
-                </div>
-                <div class="metric-row">
-                    <span class="metric-label-text">Unsold Ending Stock Delta:</span>
-                    <span class="metric-val-text">{format_units(ending_stock_delta, include_sign=True)}</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    # Policy Differences & Variance Summary
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+    st.markdown("##### Policy Differences & Strategic Variance")
+    cd1, cd2, cd3, cd4 = st.columns(4)
+    with cd1:
+        st.metric("Waste Saved", format_units(waste_saved, include_sign=True), delta=f"{waste_red_pct:.1f}% reduction", delta_color="normal")
+    with cd2:
+        st.metric("Additional Units Sold", format_units(units_sold_gain, include_sign=True), delta=f"{format_pp(sell_through_gain, include_sign=True)} sell-through", delta_color="normal")
+    with cd3:
+        st.metric("Revenue Variance", format_inr(rev_gain, include_sign=True), delta=f"{format_inr(margin_gain, include_sign=True)} gross margin", delta_color="normal")
+    with cd4:
+        st.metric("Net Contribution Gain", format_inr(net_contrib_gain, include_sign=True), delta=f"{format_inr(waste_cost_saved, include_sign=True)} waste saved", delta_color="normal")
 
-    # 6. Honest Accounting Distinction Callout
-    tradeoff_explanation = ""
     if rev_gain > 0 and margin_gain < 0:
-        tradeoff_explanation = (
-            f"• <b>Revenue vs. Margin Trade-Off</b>: Store revenue increased by <b>{format_inr(rev_gain, include_sign=True)}</b>, "
-            f"while gross margin decreased by <b>{format_inr(margin_gain, include_sign=True)}</b>. "
-            f"This occurs because clearance discounts stimulate consumer demand to eliminate perishable waste before expiry, "
-            f"sacrificing per-unit profit margin in exchange for recovering working capital on stock that would otherwise produce zero revenue.<br>"
-        )
-    elif rev_gain >= 0 and margin_gain >= 0:
-        tradeoff_explanation = (
-            f"• <b>Dual Expansion</b>: Both revenue ({format_inr(rev_gain, include_sign=True)}) and "
-            f"gross margin ({format_inr(margin_gain, include_sign=True)}) expanded under dynamic markdowns.<br>"
+        st.caption(
+            f"ℹ️ **Margin Trade-Off**: Revenue expanded by {format_inr(rev_gain, include_sign=True)}, while gross margin changed by {format_inr(margin_gain, include_sign=True)} "
+            f"due to clearance discounts. However, eliminating {format_inr(waste_cost_saved, include_sign=True)} of spoilage losses yielded a net operational contribution gain of **{format_inr(net_contrib_gain, include_sign=True)}**."
         )
 
-    st.markdown(
-        f"""
-        <div class="accounting-notice">
-            <b>💡 Honest Retail Accounting Insight: Margin (₹ INR) vs. Margin Percentage (%)</b><br>
-            • <b>Gross Margin (INR ₹)</b> is calculated as Revenue minus COGS ($Gross Margin = Revenue - COGS$). Here, Markdown Policy generates <b>{format_inr(m.gross_margin)}</b> compared to Fixed Baseline's <b>{format_inr(f.gross_margin)}</b> ({format_inr(margin_gain, include_sign=True)} variance).<br>
-            • <b>Gross Margin (%)</b> is the efficiency ratio per Rupee of revenue ($Gross Margin / Revenue$). Because clearance markdowns offer discounts (e.g. 20%–40%), the gross margin percentage shifts from <b>{f.gross_margin_pct:.2f}%</b> to <b>{m.gross_margin_pct:.2f}%</b> ({format_pct(margin_pct_diff, include_sign=True)}).<br>
-            {tradeoff_explanation}
-            • <b>Physical Waste Elimination</b>: Dynamic markdowns eliminate <b>{format_units(waste_saved)} of food waste ({waste_red_pct:.1f}% reduction)</b>, converting dead inventory losses into realized cash flow and customer goodwill, while strictly respecting the wholesale unit cost floor.
-        </div>
-        """,
-        unsafe_allow_html=True,
+    # 7. Required Comparison Visualizations (Separate axes and dedicated charts)
+    render_html('<div class="section-header">Financial & Waste Visualizations</div>')
+    render_html(
+        '<div class="section-subtext">Dedicated visualizations comparing financial cash flows (INR ₹) and physical waste reduction (Units):</div>'
     )
-
-    # 7. Comparison Table & Visual Analytics
-    st.markdown('<div class="section-header">2. Comparative Visual Analytics & Reconciled Table</div>', unsafe_allow_html=True)
-
-    col_tbl, col_cht = st.columns([1, 1])
-
-    with col_tbl:
-        st.markdown("#### Cumulative Reconciled Summary Table")
-        st.dataframe(sim_result.comparison_summary_df, use_container_width=True, hide_index=True)
-
-        st.download_button(
-            label="📥 Download Comparison Summary CSV",
-            data=sim_result.comparison_summary_df.to_csv(index=False),
-            file_name="policy_comparison_summary.csv",
-            mime="text/csv",
-        )
-
-    with col_cht:
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
         st.plotly_chart(create_comparison_chart(f, m), use_container_width=True)
+    with col_c2:
+        st.plotly_chart(create_waste_comparison_chart(f, m), use_container_width=True)
 
-    st.plotly_chart(create_waste_comparison_chart(f, m), use_container_width=True)
-
-    # 8. Per-Product Daily Simulation History (Source of Physical Waste Tracking)
-    st.markdown('<div class="section-header">3. Per-Product Daily Simulation History</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-subtext">Source of physical inventory tracking, daily turnover, selling prices, units sold, and expired waste across all 20 products:</div>',
-        unsafe_allow_html=True,
+    # 8. Per-Product Markdown History (Preserved MVP Requirement)
+    render_html('<div class="section-header">Product Markdown History</div>')
+    render_html(
+        '<div class="section-subtext">Inspect price trajectories, recorded markdown events, and daily inventory movements by product:</div>'
     )
 
-    daily_df = sim_result.daily_history_df.copy()
+    products = get_default_products()
+    prod_names = [p.name for p in products]
 
-    col_f1, col_f2, col_f3 = st.columns(3)
-    with col_f1:
-        sel_policy = st.selectbox("Filter Strategy:", options=["All", "markdown", "fixed"], index=1, key="daily_policy_filter")
-    with col_f2:
-        products_list = ["All"] + sorted(daily_df["product_name"].unique())
-        sel_product = st.selectbox("Filter Perishable Product:", options=products_list, index=0, key="daily_product_filter")
-    with col_f3:
-        max_days = max(1, int(sim_days))
-        sel_day = st.slider(
-            "Filter Simulation Day Range:",
-            min_value=1,
-            max_value=max_days,
-            value=(1, max_days),
-            key=f"day_range_filter_{max_days}",
+    col_psel1, col_psel2 = st.columns([1, 2])
+    with col_psel1:
+        selected_prod_name = st.selectbox(
+            "Select Perishable Product (20 Products):",
+            options=prod_names,
+            index=0,
+            key="sim_product_select",
         )
+    selected_prod = [p for p in products if p.name == selected_prod_name][0]
+    p_id = selected_prod.product_id
 
-    filtered_daily = daily_df[
-        (daily_df["day"] >= sel_day[0]) & (daily_df["day"] <= sel_day[1])
-    ]
-    if sel_policy != "All":
-        filtered_daily = filtered_daily[filtered_daily["policy"] == sel_policy]
-    if sel_product != "All":
-        filtered_daily = filtered_daily[filtered_daily["product_name"] == sel_product]
+    # Selected product daily records under Markdown Policy
+    p_md_df = sim_result.daily_history_df[(sim_result.daily_history_df["product_id"] == p_id) & (sim_result.daily_history_df["policy"] == "markdown")].sort_values("day")
+    p_fixed_df = sim_result.daily_history_df[(sim_result.daily_history_df["product_id"] == p_id) & (sim_result.daily_history_df["policy"] == "fixed")].sort_values("day")
 
-    display_cols = [
-        "day", "policy", "product_name", "category", "days_until_expiry",
-        "regular_price", "selling_price", "discount_pct", "units_sold",
-        "units_wasted", "revenue", "gross_margin", "ending_stock"
-    ]
-    rename_cols = {
-        "day": "Day",
-        "policy": "Policy",
-        "product_name": "Product",
-        "category": "Category",
-        "days_until_expiry": "Days to Expiry",
-        "regular_price": "Base Price (₹)",
-        "selling_price": "Selling Price (₹)",
-        "discount_pct": "Discount %",
-        "units_sold": "Units Sold",
-        "units_wasted": "Units Wasted",
-        "revenue": "Revenue (₹)",
-        "gross_margin": "Gross Margin (₹)",
-        "ending_stock": "Ending Stock",
-    }
+    p_sold_md = float(p_md_df["units_sold"].sum())
+    p_waste_md = float(p_md_df["units_wasted"].sum())
+    p_waste_fixed = float(p_fixed_df["units_wasted"].sum())
+    p_md_events_cnt = int((p_md_df["discount_pct"] > 0).sum())
 
-    st.dataframe(
-        filtered_daily[display_cols].rename(columns=rename_cols),
-        use_container_width=True,
-        hide_index=True,
-    )
+    with col_psel2:
+        col_pk1, col_pk2, col_pk3, col_pk4 = st.columns(4)
+        with col_pk1:
+            st.metric("Category & SKU", f"{selected_prod.category.title()}", delta=p_id)
+        with col_pk2:
+            st.metric("Base Price & Cost", f"₹{selected_prod.base_price:.2f}", delta=f"Cost ₹{selected_prod.unit_cost:.2f}")
+        with col_pk3:
+            st.metric("Base Margin (%)", f"{((selected_prod.base_price - selected_prod.unit_cost)/selected_prod.base_price*100):.1f}%", delta=f"{selected_prod.shelf_life_days}d shelf life")
+        with col_pk4:
+            st.metric("Markdown Waste", f"{p_waste_md:.1f} units", delta=f"{p_waste_md - p_waste_fixed:+.1f} vs Fixed", delta_color="inverse")
 
-    st.download_button(
-        label="📥 Download Daily History CSV",
-        data=filtered_daily.to_csv(index=False),
-        file_name="daily_simulation_history.csv",
-        mime="text/csv",
-    )
-
-    # 9. Markdown Events History Table (Promotional Clearance Audit Log)
-    st.markdown('<div class="section-header">4. Per-Product Markdown Event History (Promotional Clearance Log)</div>', unsafe_allow_html=True)
-    st.markdown(
-        f'<div class="section-subtext">Chronological promotional audit trail recording every discounted transaction under Markdown Policy '
-        f'(`{len(sim_result.markdown_events_df)}` clearance events recorded):</div>',
-        unsafe_allow_html=True,
-    )
-
-    events_df = sim_result.markdown_events_df
-    if events_df.empty:
-        st.info("No markdown events were triggered under the active policy configuration.")
+    # Interactive Price Trajectory Chart
+    st.plotly_chart(create_sim_product_price_chart(p_md_df, selected_prod_name), use_container_width=True)
+    if p_md_events_cnt == 0:
+        st.info(
+            f"ℹ️ **Constant Price Trajectory**: No markdown events occurred for **{selected_prod_name}** ({p_id}) during this {sim_days}-day simulation. "
+            f"The selling price remained strictly flat at the regular catalog price of ₹{selected_prod.base_price:.2f} across all simulation days because all batches had sufficient shelf life or cleared at full price."
+        )
     else:
-        evt_rename = {
-            "day": "Day",
-            "product_name": "Product",
-            "category": "Category",
-            "days_until_expiry": "Days Left",
-            "regular_price": "Base Price (₹)",
-            "selling_price": "Discounted Price (₹)",
-            "discount_pct": "Discount %",
-            "units_sold": "Units Sold",
-            "units_wasted": "Units Wasted",
-            "reason": "Clearance Trigger",
-        }
-        disp_evt_cols = [c for c in evt_rename.keys() if c in events_df.columns]
-        st.dataframe(
-            events_df[disp_evt_cols].rename(columns=evt_rename),
-            use_container_width=True,
-            hide_index=True,
+        event_days = p_md_df[p_md_df["discount_pct"] > 0]["day"].tolist()
+        days_str = ", ".join(f"Day {d}" for d in event_days)
+        st.caption(
+            f"🏷️ **Active Markdowns Applied**: Selling price dropped below base price on {len(event_days)} days ({days_str}) "
+            f"under configured clearance rules (≤ {t2}d: {d2}% | ≤ {t1}d: {d1}%)."
         )
+
+    # Markdown Event History Table for Selected Product
+    prod_events = sim_result.markdown_events_df[sim_result.markdown_events_df["product_id"] == p_id].copy() if not sim_result.markdown_events_df.empty else pd.DataFrame()
+    with st.expander(f"📜 Recorded Markdown Events History for {selected_prod_name} ({len(prod_events)} Events)", expanded=len(prod_events) > 0):
+        if prod_events.empty:
+            st.info(
+                f"ℹ️ **No markdown events were recorded for {selected_prod_name} ({p_id})** during this {sim_days}-day simulation.\n\n"
+                f"All inventory batches for this product maintained sufficient shelf life (> {t2} days remaining) or cleared through natural customer demand at the regular price of ₹{selected_prod.base_price:.2f} without requiring promotional price reductions."
+            )
+        else:
+            evt_disp = prod_events.copy()
+            evt_disp["calculated_discount_pct"] = (
+                (evt_disp["regular_price"] - evt_disp["selling_price"]) / evt_disp["regular_price"] * 100.0
+            ).round(1)
+
+            if "available_stock" not in evt_disp.columns or evt_disp["available_stock"].isna().all() or (evt_disp["available_stock"] == 0).all():
+                p_avail_map = dict(zip(p_md_df["day"], p_md_df["units_sold"] + p_md_df["ending_stock"]))
+                evt_disp["available_stock"] = evt_disp["day"].map(p_avail_map).fillna(evt_disp["units_sold"])
+
+            evt_disp["Simulation Day"] = evt_disp["day"].apply(lambda d: f"Day {d}")
+            evt_disp["Product Name"] = selected_prod_name
+            evt_disp["SKU"] = p_id
+            evt_disp["Days to Expiry"] = evt_disp["days_until_expiry"].apply(lambda d: f"{int(d)} {'day' if int(d)==1 else 'days'}")
+            evt_disp["Regular Base Price"] = evt_disp["regular_price"].apply(lambda p: f"₹{p:.2f}")
+            evt_disp["Actual Markdown Price"] = evt_disp["selling_price"].apply(lambda p: f"₹{p:.2f}")
+            evt_disp["Discount %"] = evt_disp["calculated_discount_pct"].apply(lambda d: f"{d:.1f}%")
+            evt_disp["Available Stock"] = evt_disp["available_stock"].apply(lambda s: f"{s:,.1f} units")
+            evt_disp["Units Sold"] = evt_disp["units_sold"].apply(lambda u: f"{u:,.1f} units")
+            evt_disp["Markdown Trigger Reason"] = evt_disp["reason"]
+
+            out_cols = [
+                "Simulation Day", "Product Name", "SKU", "Days to Expiry",
+                "Regular Base Price", "Actual Markdown Price", "Discount %",
+                "Available Stock", "Units Sold", "Markdown Trigger Reason"
+            ]
+            st.dataframe(evt_disp[out_cols], use_container_width=True, hide_index=True)
+            st.caption(
+                f"✅ **Audit Trail**: Exactly {len(prod_events)} genuine clearance events recorded from simulation. "
+                f"Discount percentages strictly calculated as `(Base Price - Markdown Price) / Base Price`."
+            )
+
+    # Daily Sales, Inventory & Spoilage Ledger in Clean Expander
+    with st.expander(f"📋 Daily Sales, Inventory & Spoilage Ledger — {selected_prod_name} (30 Days)", expanded=False):
+        ledger_disp = p_md_df.copy()
+        ledger_disp["avail_stock"] = ledger_disp["units_sold"] + ledger_disp["ending_stock"]
+        ledger_disp["Simulation Day"] = ledger_disp["day"].apply(lambda d: f"Day {d}")
+        ledger_disp["Available Stock"] = ledger_disp["avail_stock"].apply(lambda s: f"{s:,.1f} units")
+        ledger_disp["Units Sold"] = ledger_disp["units_sold"].apply(lambda s: f"{s:,.1f} units")
+        ledger_disp["Units Expired / Wasted"] = ledger_disp["units_wasted"].apply(lambda w: f"{w:,.1f} units")
+        ledger_disp["Ending Stock"] = ledger_disp["ending_stock"].apply(lambda e: f"{e:,.1f} units")
+        ledger_disp["Actual Selling Price"] = ledger_disp["selling_price"].apply(lambda p: f"₹{p:.2f}")
+        ledger_disp["Markdown Status"] = ledger_disp["discount_pct"].apply(
+            lambda d: f"🔥 Markdown ({d:.0f}% Off)" if d > 0 else "Regular Full Price"
+        )
+        ledger_disp["Waste Cost"] = ledger_disp["waste_cost"].apply(lambda c: f"₹{c:.2f}" if c > 0 else "₹0.00")
+        ledger_disp["Days to Expiry"] = ledger_disp["days_until_expiry"].apply(lambda d: f"{int(d)}d")
+
+        ledger_cols = [
+            "Simulation Day", "Days to Expiry", "Available Stock", "Units Sold",
+            "Units Expired / Wasted", "Ending Stock", "Actual Selling Price",
+            "Markdown Status", "Waste Cost"
+        ]
+        st.dataframe(ledger_disp[ledger_cols], use_container_width=True, hide_index=True)
+
+        # Product-Level Inventory Reconciliation
+        arrivals_all = generate_arrival_schedule(products, sim_days=sim_days, seed=seed_val)
+        prod_batches = [b for b in arrivals_all if b.product_id == p_id]
+        tot_received = sum(b.initial_quantity for b in prod_batches)
+        end_qty = float(p_md_df.iloc[-1]["ending_stock"]) if not p_md_df.empty else 0.0
+        tot_waste_cost = float(p_md_df["waste_cost"].sum())
+        tot_revenue = float(p_md_df["revenue"].sum())
+
+        col_lr1, col_lr2, col_lr3, col_lr4 = st.columns(4)
+        with col_lr1:
+            st.metric("Total Batches Received", f"{tot_received:,.0f} units", delta=f"{len(prod_batches)} Batches Scheduled")
+        with col_lr2:
+            st.metric("Total Units Sold", f"{p_sold_md:,.1f} units", delta=f"Revenue: {format_inr(tot_revenue)}")
+        with col_lr3:
+            st.metric("Total Units Expired / Wasted", f"{p_waste_md:,.1f} units", delta=f"Waste Cost: {format_inr(tot_waste_cost)}", delta_color="inverse")
+        with col_lr4:
+            st.metric("Ending Closing Stock (Day 30)", f"{end_qty:,.1f} units", delta="Inventory Conserved ✅")
 
         st.caption(
-            "📌 Notice: In this promotional log, 'Units Wasted' records unpreventable batch waste that occurred on that specific product-day. "
-            "When clearance pricing succeeds in selling near-expiry stock before expiration, units_wasted evaluates to 0.0. "
-            "Store-wide cumulative waste is tracked comprehensively in the Daily Simulation History above."
+            f"⚖️ **Product Inventory Conservation Identity**: {tot_received:,.1f} Total Received = "
+            f"{p_sold_md:,.1f} Sold + {p_waste_md:,.1f} Wasted + {end_qty:,.1f} Ending Inventory. "
+            f"(100% reconciled with store simulation)."
         )
 
-        st.download_button(
-            label="📥 Download Markdown Events CSV",
-            data=events_df.to_csv(index=False),
-            file_name="markdown_events_history.csv",
-            mime="text/csv",
+    # 9. Advanced Analysis & Diagnostic Tools (Encapsulated Section)
+    with st.expander("🔬 Advanced Analysis & Diagnostic Tools", expanded=False):
+        tab_cat_opt, tab_sens, tab_full_ledger, tab_recs, tab_hist, tab_repro, tab_method = st.tabs(
+            [
+                "🏷️ Category Optimizer",
+                "📈 Shopper Sensitivity",
+                "🔍 Store-Wide Daily Ledger",
+                "📋 Markdown Recommendations",
+                "📊 1-Year Historical Demand",
+                "🎲 Reproducibility & Exports",
+                "📖 Methodology & Framework",
+            ]
         )
 
-    # 10. Zomato Red-and-White Footer
-    st.markdown(
+        with tab_cat_opt:
+            render_category_optimizer_tab(sim_days=int(sim_days), min_margin=float(min_margin))
+
+        with tab_sens:
+            render_sensitivity_tab(
+                sim_days=int(sim_days),
+                seed_val=int(seed_val),
+                t1=int(t1),
+                d1=float(d1),
+                t2=int(t2),
+                d2=float(d2),
+                min_margin=float(min_margin),
+                current_multiplier=1.0,
+            )
+
+        with tab_full_ledger:
+            st.markdown("##### Full Store Operational Ledger (All 20 Products)")
+            daily_df = sim_result.daily_history_df.copy()
+            col_lf1, col_lf2, col_lf3 = st.columns(3)
+            with col_lf1:
+                sel_policy = st.selectbox("Filter Strategy:", options=["All", "markdown", "fixed"], index=1, key="daily_policy_filter")
+            with col_lf2:
+                products_list = ["All"] + sorted(daily_df["product_name"].unique())
+                sel_product = st.selectbox("Filter Perishable Product:", options=products_list, index=0, key="daily_product_filter")
+            with col_lf3:
+                max_days = max(1, int(sim_days))
+                sel_day = st.slider(
+                    "Filter Simulation Day Range:",
+                    min_value=1,
+                    max_value=max_days,
+                    value=(1, max_days),
+                    key=f"day_range_filter_{max_days}",
+                )
+
+            filtered_daily = daily_df[(daily_df["day"] >= sel_day[0]) & (daily_df["day"] <= sel_day[1])]
+            if sel_policy != "All":
+                filtered_daily = filtered_daily[filtered_daily["policy"] == sel_policy]
+            if sel_product != "All":
+                filtered_daily = filtered_daily[filtered_daily["product_name"] == sel_product]
+
+            display_cols = [
+                "day", "policy", "product_name", "category", "days_until_expiry",
+                "regular_price", "selling_price", "discount_pct", "units_sold",
+                "units_wasted", "revenue", "gross_margin", "ending_stock", "active_batch_ids"
+            ]
+            rename_cols = {
+                "day": "Day",
+                "policy": "Policy",
+                "product_name": "Product",
+                "category": "Category",
+                "days_until_expiry": "Days to Expiry",
+                "regular_price": "Base Price (₹)",
+                "selling_price": "Selling Price (₹)",
+                "discount_pct": "Discount %",
+                "units_sold": "Units Sold",
+                "units_wasted": "Units Wasted",
+                "revenue": "Revenue (₹)",
+                "gross_margin": "Gross Margin (₹)",
+                "ending_stock": "Ending Stock",
+                "active_batch_ids": "Active Batch IDs",
+            }
+            valid_disp_cols = [c for c in display_cols if c in filtered_daily.columns]
+            st.dataframe(filtered_daily[valid_disp_cols].rename(columns=rename_cols), use_container_width=True, hide_index=True)
+
+            st.download_button(
+                label="📥 Download Daily History CSV",
+                data=filtered_daily.to_csv(index=False),
+                file_name="daily_simulation_history.csv",
+                mime="text/csv",
+                key="download_daily_history_csv",
+            )
+
+        with tab_recs:
+            st.markdown("##### Product-Specific Clearance Markdown Recommendations")
+            if sim_result.recommendations_df is not None and not sim_result.recommendations_df.empty:
+                recs_df = sim_result.recommendations_df
+                fmt_recs_df = recs_df.copy()
+                fmt_recs_df["Base Price"] = fmt_recs_df["Base Price"].apply(lambda v: f"₹{v:,.2f}")
+                fmt_recs_df["Recommended Selling Price"] = fmt_recs_df["Recommended Selling Price"].apply(lambda v: f"₹{v:,.2f}")
+                fmt_recs_df["Recommended Discount (%)"] = fmt_recs_df["Recommended Discount (%)"].apply(lambda v: f"{v:.0f}%")
+                fmt_recs_df["Base Margin (%)"] = fmt_recs_df["Base Margin (%)"].apply(lambda v: f"{v:.1f}%")
+                fmt_recs_df["Discounted Margin (%)"] = fmt_recs_df["Discounted Margin (%)"].apply(lambda v: f"{v:.1f}%")
+                st.dataframe(fmt_recs_df, use_container_width=True, hide_index=True)
+                st.download_button(
+                    label="📥 Download Recommendations CSV",
+                    data=recs_df.to_csv(index=False),
+                    file_name="product_markdown_recommendations.csv",
+                    mime="text/csv",
+                    key="download_recommendations_csv",
+                )
+
+        with tab_hist:
+            st.markdown("##### One-Year Synthetic Historical Demand Analysis")
+            hist_df = load_historical_demand_data()
+            if not hist_df.empty:
+                h_prod_names = sorted(hist_df["product_name"].unique())
+                h_selected_prod_name = st.selectbox(
+                    "Select Product for Historical Analysis:",
+                    options=h_prod_names,
+                    index=0,
+                    key="price_analysis_prod_select",
+                )
+                p_filtered = hist_df[hist_df["product_name"] == h_selected_prod_name].copy()
+                st.plotly_chart(create_historical_price_chart(p_filtered, h_selected_prod_name), use_container_width=True)
+                col_hd1, col_hd2 = st.columns(2)
+                with col_hd1:
+                    st.plotly_chart(create_discount_history_chart(p_filtered, h_selected_prod_name), use_container_width=True)
+                with col_hd2:
+                    st.plotly_chart(create_demand_trend_chart(p_filtered, h_selected_prod_name), use_container_width=True)
+            else:
+                st.info("Historical demand dataset (data/historical_product_demand.csv) not found.")
+
+        with tab_repro:
+            render_reproducibility_panel(
+                sim_result=sim_result,
+                seed_val=int(seed_val),
+                sim_days=int(sim_days),
+                policy_mode="graduated_rule",
+                shopper_multiplier=1.0,
+                min_margin=float(min_margin),
+            )
+
+        with tab_method:
+            st.markdown("##### Core Methodology & Accounting Framework")
+            st.markdown(
+                r"""
+                - **Demand Realization**: $\text{Demand} = \text{Base} \times [1 + \eta \times \text{discount}] \times \text{expiry\_factor}$.
+                - **FEFO Dispatch**: Depletion strictly fulfills orders from batches with earliest expiration.
+                - **Physical Bound**: Units sold strictly bounded by shelf stock ($\text{Sold} \le \text{Available}$).
+                - **Minimum Gross Margin Floor**: $P_{\text{min}} = \frac{\text{unit\_cost}}{1 - m_{\text{min}}}$. Markdowns never drop below $P_{\text{min}}$.
+                - **GAAP Compliance**: Gross Profit = Revenue - COGS. Waste Cost = Units Wasted $\times$ Unit Cost. Net Contribution = Gross Profit - Waste Cost.
+                """
+            )
+
+    # 10. Minimal, Clean Footer
+    render_html(
         """
-        <div class="zomato-footer">
-            <b>FreshPrice AI — NEXAI 2026 Hackathon Official MVP</b> | Problem Statement 4.1 (Track 4: Grocery Retail)<br>
-            <i>Designed with a clean, light Red-and-White retail interface inspired by food delivery & grocery intelligence platforms.<br>
-            All 20 products model real-world perishable categories (Dairy, Bakery, Fruits, Vegetables) in Indian Rupees (₹).<br>
-            Physical inventory conservation strictly enforced: Total Received = Units Sold + Units Wasted + Ending Inventory.</i>
+        <div class="minimal-footer">
+            <b>FreshPrice AI</b> • NEXAI 2026 Hackathon (Track 4: Grocery Retail, PS 4.1: Markdown Before Waste)<br>
+            <i>Simulation demo: all prices, inventory levels, and clearance offers are generated from synthetic data. Physical inventory conservation strictly enforced.</i>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 

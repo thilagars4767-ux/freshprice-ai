@@ -366,6 +366,92 @@ def recommend_dynamic_price(
     return best_price, best_discount, action_reason
 
 
+def recommend_graduated_markdown_price(
+    base_price: float,
+    unit_cost: float,
+    days_to_expiry: int,
+    shelf_life_days: int = 7,
+    near_expiry_threshold: int = 2,
+    near_expiry_discount_pct: float = 0.20,
+    urgent_clearance_threshold: int = 1,
+    urgent_clearance_discount_pct: float = 0.40,
+    min_gross_margin_pct: float = 0.0,
+    enforce_margin_floor: bool = True,
+) -> Tuple[float, float, str, bool]:
+    """Recommend graduated near-expiry markdown price with margin floor enforcement.
+
+    Implements the two-tier shelf-life aware clearance discount rules:
+    - Urgent clearance: urgent_clearance_threshold (default 1 day), urgent_clearance_discount_pct (default 40%)
+    - Near-expiry markdown: near_expiry_threshold (default 2 days), near_expiry_discount_pct (default 20%)
+    - Urgent clearance takes precedence over near-expiry when both apply.
+    - Never discounts expired products (days_to_expiry <= 0).
+    - Selling price is bounded below by the minimum gross margin price floor:
+      minimum_price = unit_cost / (1 - min_margin_rate).
+
+    Parameters
+    ----------
+    base_price : float
+        Regular retail catalog price in INR.
+    unit_cost : float
+        Wholesale unit acquisition cost in INR.
+    days_to_expiry : int
+        Days remaining until batch expiration.
+    shelf_life_days : int, optional
+        Total lifespan of the SKU (default 7).
+    near_expiry_threshold : int, optional
+        Threshold for first markdown (default 2 days).
+    near_expiry_discount_pct : float, optional
+        Discount fraction for first markdown (default 0.20 for 20%).
+    urgent_clearance_threshold : int, optional
+        Threshold for urgent clearance (default 1 day).
+    urgent_clearance_discount_pct : float, optional
+        Discount fraction for urgent clearance (default 0.40 for 40%).
+    min_gross_margin_pct : float, optional
+        Target minimum gross margin percentage (e.g. 10.0 for 10% margin floor).
+    enforce_margin_floor : bool, optional
+        Whether to enforce minimum gross margin floor (default True).
+
+    Returns
+    -------
+    Tuple[float, float, str, bool]
+        (selling_price, discount_fraction, reason, margin_floor_limited)
+    """
+    if days_to_expiry <= 0:
+        return (base_price, 0.0, "Product expired; condemned as spoilage waste", False)
+
+    # Shelf-life aware adjustment
+    max_near_expiry_window = max(1, shelf_life_days - 2)
+    eff_t2 = min(int(near_expiry_threshold), max_near_expiry_window)
+    eff_t1 = min(int(urgent_clearance_threshold), eff_t2)
+
+    # Precedence rule: urgent clearance takes priority over near-expiry
+    if days_to_expiry <= eff_t1 and urgent_clearance_discount_pct > 0.0:
+        raw_discount = float(urgent_clearance_discount_pct)
+        reason = f"Urgent clearance (<= {eff_t1} day{'s' if eff_t1 != 1 else ''} to expiry)"
+    elif days_to_expiry <= eff_t2 and near_expiry_discount_pct > 0.0:
+        raw_discount = float(near_expiry_discount_pct)
+        reason = f"Near-expiry markdown (<= {eff_t2} day{'s' if eff_t2 != 1 else ''} to expiry)"
+    else:
+        raw_discount = 0.0
+        reason = "Sufficient shelf life remaining"
+
+    if raw_discount <= 0.0:
+        return (base_price, 0.0, reason, False)
+
+    tentative_price = round(base_price * (1.0 - raw_discount), 2)
+
+    # Calculate margin floor price: minimum_price = unit_cost / (1 - min_margin_rate)
+    m = min_gross_margin_pct / 100.0 if min_gross_margin_pct > 1.0 else min_gross_margin_pct
+    min_price = round(unit_cost / (1.0 - m), 2) if m > 0.0 else round(unit_cost, 2)
+
+    if enforce_margin_floor and tentative_price < min_price:
+        selling_price = min_price
+        applied_discount = round((base_price - min_price) / base_price, 4)
+        return (selling_price, applied_discount, f"{reason} (Capped at margin floor ₹{min_price:.2f})", True)
+    else:
+        return (tentative_price, raw_discount, reason, False)
+
+
 def simulate_batch(
     row: pd.Series | Dict[str, Any],
     strategy: str = "dynamic",

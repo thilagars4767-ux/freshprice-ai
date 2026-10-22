@@ -324,3 +324,121 @@ def test_markdown_event_history_agrees_with_actual_discounts():
         assert rec["selling_price"] == ev["selling_price"]
         assert rec["units_sold"] == ev["units_sold"]
 
+
+def test_validate_markdown_config():
+    """Verify validate_markdown_config validates negative values and invalid margin floors."""
+    from src.store_simulator import validate_markdown_config
+
+    valid_cfg = MarkdownPolicyConfig(
+        discount_1_pct=0.40,
+        discount_2_pct=0.20,
+        min_gross_margin_pct=5.0,
+    )
+    validate_markdown_config(valid_cfg)  # Should not raise
+
+    with pytest.raises(ValueError, match="negative"):
+        validate_markdown_config(MarkdownPolicyConfig(discount_1_pct=-0.1))
+
+    with pytest.raises(ValueError, match="negative"):
+        validate_markdown_config(MarkdownPolicyConfig(discount_2_pct=-0.05))
+
+    with pytest.raises(ValueError, match="negative"):
+        validate_markdown_config(MarkdownPolicyConfig(threshold_1_days=-1))
+
+    with pytest.raises(ValueError, match="margin percentage"):
+        validate_markdown_config(MarkdownPolicyConfig(min_gross_margin_pct=100.0))
+
+
+def test_official_thirteen_metrics_in_summary_df():
+    """Verify all official metrics required by NEXAI 2026 are present in comparison_summary_df."""
+    res = run_store_simulation(sim_days=30, seed=42)
+    metrics_list = res.comparison_summary_df["Metric"].tolist()
+
+    expected_metrics = [
+        "Initial Inventory Received (units)",
+        "Units Sold",
+        "Units Wasted (Expired)",
+        "Sell-Through Rate (%)",
+        "Waste Rate (%)",
+        "Waste Reduction (%)",
+        "Total Revenue (INR)",
+        "Cost of Goods Sold - COGS (INR)",
+        "Gross Margin (INR)",
+        "Gross Margin (%)",
+        "Total Waste Cost (INR)",
+        "Net Contribution after Waste (INR)",
+        "Markdown Events Recorded",
+        "Markdown Units Sold (units)",
+    ]
+
+    for em in expected_metrics:
+        assert em in metrics_list, f"Missing required metric: {em}"
+
+    # Verify accounting identity: Net Contribution = Gross Profit - Waste Cost
+    f = res.fixed_metrics
+    m = res.markdown_metrics
+    assert abs(f.net_contribution - (f.gross_margin - f.total_waste_cost)) < 1e-4
+    assert abs(m.net_contribution - (m.gross_margin - m.total_waste_cost)) < 1e-4
+    assert f.markdown_units_sold == 0
+    assert m.markdown_units_sold >= 0
+    assert 0.0 <= f.sell_through_rate_pct <= 100.0
+    assert 0.0 <= m.sell_through_rate_pct <= 100.0
+
+
+def test_margin_floor_limits_excessive_markdowns():
+    """Verify that aggressive discounts are clamped by the minimum gross margin floor."""
+    # Configure an extreme discount of 90% with a 20% margin floor
+    config = MarkdownPolicyConfig(
+        threshold_1_days=1,
+        discount_1_pct=0.90,
+        threshold_2_days=2,
+        discount_2_pct=0.80,
+        min_gross_margin_pct=20.0,
+    )
+    res = run_store_simulation(sim_days=30, seed=42, config=config)
+    events_df = res.markdown_events_df
+
+    assert not events_df.empty
+    # Margin floor limiting should have triggered
+    clamped_events = events_df[events_df["margin_floor_limited"] == True]
+    assert len(clamped_events) > 0
+
+    prods = {p["product_id"]: p for _, p in res.products_df.iterrows()}
+    for _, ev in clamped_events.iterrows():
+        assert ev["actual_discount_pct"] < ev["requested_discount_pct"]
+        prod = prods[ev["product_id"]]
+        # Actual price must be >= cost / (1 - 0.20)
+        min_allowed_price = prod["unit_cost"] / (1.0 - 0.20)
+        assert ev["selling_price"] >= min_allowed_price - 1e-4
+
+
+def test_shopper_response_multiplier_sensitivity():
+    """Verify shopper response multiplier scales discount uplift while preserving baseline."""
+    from src.store_simulator import validate_markdown_config
+
+    # Run default (multiplier = 1.0)
+    cfg_100 = MarkdownPolicyConfig(shopper_response_multiplier=1.0)
+    res_100 = run_store_simulation(sim_days=30, seed=42, config=cfg_100)
+
+    # Run half-strength response (multiplier = 0.5)
+    cfg_050 = MarkdownPolicyConfig(shopper_response_multiplier=0.5)
+    res_050 = run_store_simulation(sim_days=30, seed=42, config=cfg_050)
+
+    # Fixed-price baseline must be identical (since discount = 0)
+    assert res_100.fixed_metrics.revenue == pytest.approx(res_050.fixed_metrics.revenue, abs=1e-4)
+    assert res_100.fixed_metrics.units_sold == pytest.approx(res_050.fixed_metrics.units_sold, abs=1e-4)
+    assert res_100.fixed_metrics.units_wasted == pytest.approx(res_050.fixed_metrics.units_wasted, abs=1e-4)
+
+    # Under markdown, 0.5 response yields lower sales velocity on discounted items
+    m_100 = res_100.markdown_metrics
+    m_050 = res_050.markdown_metrics
+    assert m_050.units_sold <= m_100.units_sold
+    assert m_050.units_wasted >= m_100.units_wasted
+
+    # Negative multiplier must raise ValueError
+    with pytest.raises(ValueError, match="Shopper response multiplier cannot be negative"):
+        validate_markdown_config(MarkdownPolicyConfig(shopper_response_multiplier=-0.2))
+
+
+
+

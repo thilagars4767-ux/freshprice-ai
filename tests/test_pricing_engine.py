@@ -15,6 +15,7 @@ from src.pricing_engine import (
     compare_strategies,
     load_inventory,
     recommend_dynamic_price,
+    recommend_graduated_markdown_price,
     simulate_batch,
     simulate_inventory,
 )
@@ -365,3 +366,154 @@ def test_cli_execution(tmp_path: Path):
     assert "Metric" in df.columns
     assert "Fixed-Price Baseline" in df.columns
     assert "Dynamic Markdown Strategy" in df.columns
+
+
+# ---------------------------------------------------------------------------
+# Tests for Graduated Markdown Pricing Rules & Margin Floor Enforcement
+# ---------------------------------------------------------------------------
+
+def test_graduated_markdown_default_thresholds_produce_expected_prices():
+    """Verify default thresholds (20% at 2 days, 40% at 1 day) calculate expected prices."""
+    base_price = 100.0
+    unit_cost = 40.0
+
+    # 1. 2 days remaining -> 20% discount (Price: 80.0)
+    p2, d2, reason2, limited2 = recommend_graduated_markdown_price(
+        base_price=base_price,
+        unit_cost=unit_cost,
+        days_to_expiry=2,
+        shelf_life_days=7,
+        near_expiry_threshold=2,
+        near_expiry_discount_pct=0.20,
+        urgent_clearance_threshold=1,
+        urgent_clearance_discount_pct=0.40,
+    )
+    assert p2 == 80.0
+    assert d2 == 0.20
+    assert "Near-expiry markdown" in reason2
+    assert not limited2
+
+    # 2. 1 day remaining -> 40% discount (Price: 60.0)
+    p1, d1, reason1, limited1 = recommend_graduated_markdown_price(
+        base_price=base_price,
+        unit_cost=unit_cost,
+        days_to_expiry=1,
+        shelf_life_days=7,
+        near_expiry_threshold=2,
+        near_expiry_discount_pct=0.20,
+        urgent_clearance_threshold=1,
+        urgent_clearance_discount_pct=0.40,
+    )
+    assert p1 == 60.0
+    assert d1 == 0.40
+    assert "Urgent clearance" in reason1
+    assert not limited1
+
+    # 3. 3 days remaining -> 0% discount (Price: 100.0)
+    p3, d3, reason3, limited3 = recommend_graduated_markdown_price(
+        base_price=base_price,
+        unit_cost=unit_cost,
+        days_to_expiry=3,
+        shelf_life_days=7,
+    )
+    assert p3 == 100.0
+    assert d3 == 0.0
+    assert "Sufficient shelf life" in reason3
+    assert not limited3
+
+
+def test_graduated_markdown_changing_thresholds_updates_prices():
+    """Verify changing thresholds and discount rates directly adjusts pricing."""
+    base_price = 200.0
+    unit_cost = 80.0
+
+    # Changing near-expiry threshold to 3 days and discount to 25%
+    p, d, reason, _ = recommend_graduated_markdown_price(
+        base_price=base_price,
+        unit_cost=unit_cost,
+        days_to_expiry=3,
+        shelf_life_days=7,
+        near_expiry_threshold=3,
+        near_expiry_discount_pct=0.25,
+        urgent_clearance_threshold=1,
+        urgent_clearance_discount_pct=0.50,
+    )
+    assert p == 150.0  # 200 * (1 - 0.25)
+    assert d == 0.25
+    assert "Near-expiry markdown" in reason
+
+    # Changing urgent clearance discount to 50%
+    p_urg, d_urg, reason_urg, _ = recommend_graduated_markdown_price(
+        base_price=base_price,
+        unit_cost=unit_cost,
+        days_to_expiry=1,
+        shelf_life_days=7,
+        near_expiry_threshold=3,
+        near_expiry_discount_pct=0.25,
+        urgent_clearance_threshold=1,
+        urgent_clearance_discount_pct=0.50,
+    )
+    assert p_urg == 100.0  # 200 * (1 - 0.50)
+    assert d_urg == 0.50
+    assert "Urgent clearance" in reason_urg
+
+
+def test_graduated_markdown_urgent_clearance_precedence():
+    """Verify urgent clearance rule takes precedence over near-expiry when both apply."""
+    # When days_to_expiry = 1, it satisfies both <= 1 (urgent) and <= 2 (near-expiry).
+    p, d, reason, _ = recommend_graduated_markdown_price(
+        base_price=100.0,
+        unit_cost=30.0,
+        days_to_expiry=1,
+        shelf_life_days=7,
+        near_expiry_threshold=2,
+        near_expiry_discount_pct=0.20,
+        urgent_clearance_threshold=1,
+        urgent_clearance_discount_pct=0.40,
+    )
+    # Must apply 40% urgent clearance, NOT 20% near-expiry
+    assert d == 0.40
+    assert p == 60.0
+    assert "Urgent clearance" in reason
+
+
+def test_graduated_markdown_minimum_margin_floor_enforcement():
+    """Verify minimum gross margin floor caps excessive markdowns."""
+    base_price = 100.0
+    unit_cost = 80.0  # High cost item
+
+    # Tentative 40% discount would result in ₹60, which breaches unit_cost (₹80)
+    # With min_gross_margin_pct = 10.0:
+    # minimum_price = unit_cost / (1 - 0.10) = 80 / 0.90 = ₹88.89
+    p, d, reason, limited = recommend_graduated_markdown_price(
+        base_price=base_price,
+        unit_cost=unit_cost,
+        days_to_expiry=1,
+        shelf_life_days=7,
+        urgent_clearance_threshold=1,
+        urgent_clearance_discount_pct=0.40,
+        min_gross_margin_pct=10.0,
+        enforce_margin_floor=True,
+    )
+    assert p == 88.89
+    assert limited is True
+    assert p >= unit_cost
+    gross_margin_achieved = (p - unit_cost) / p
+    assert gross_margin_achieved >= 0.099  # ~10% margin floor preserved
+    assert "Capped at margin floor" in reason
+
+
+def test_graduated_markdown_expired_products_never_discounted_or_sold():
+    """Verify products with 0 or negative shelf life are rejected with zero discount."""
+    for expired_days in [0, -1, -5]:
+        p, d, reason, limited = recommend_graduated_markdown_price(
+            base_price=50.0,
+            unit_cost=30.0,
+            days_to_expiry=expired_days,
+            shelf_life_days=5,
+        )
+        assert p == 50.0
+        assert d == 0.0
+        assert "expired" in reason.lower()
+        assert not limited
+
