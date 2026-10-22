@@ -12,6 +12,8 @@ from src.dashboard import (
     create_discount_history_chart,
     create_historical_price_chart,
     create_sim_product_price_chart,
+    create_sim_product_price_vs_sales_chart,
+    create_sim_product_sales_vs_price_chart,
     create_sim_product_sales_waste_chart,
     create_waste_comparison_chart,
     format_inr,
@@ -21,6 +23,7 @@ from src.dashboard import (
     generate_rule_logic_explanation,
     load_historical_demand_data,
     load_product_price_history,
+    render_per_product_view,
     run_dashboard_simulation,
 )
 from src.store_simulator import (
@@ -992,10 +995,25 @@ def test_headless_apptest_navigation_and_product_selection():
     at.run()
     assert not at.exception
 
-    # Verify selectbox for product selection is present
+    # Default is Store Operations. Switch to "Per-Product View"
+    product_view_option = "Per-Product View"
+    if len(at.segmented_control) > 0:
+        at.segmented_control[0].select(product_view_option).run()
+    elif len(at.radio) > 0:
+        nav_radios = [r for r in at.radio if r.key == "app_main_navigation"]
+        if nav_radios:
+            nav_radios[0].select(product_view_option).run()
+
+    assert not at.exception
+
+    # Verify selectbox for product selection is present in Per-Product View
     prod_sbs = [s for s in at.selectbox if "Select Perishable Product" in s.label]
     assert len(prod_sbs) == 1
     assert len(prod_sbs[0].options) == 20
+
+    # Select another product and re-run
+    prod_sbs[0].select(prod_sbs[0].options[1]).run()
+    assert not at.exception
 
     # Switch to Today's Fresh Deals
     deal_option = "Today's Fresh Deals"
@@ -1008,6 +1026,30 @@ def test_headless_apptest_navigation_and_product_selection():
 
     assert not at.exception
 
+    # Switch back to Store Operations
+    store_option = "Store Operations"
+    if len(at.segmented_control) > 0:
+        at.segmented_control[0].select(store_option).run()
+    elif len(at.radio) > 0:
+        nav_radios = [r for r in at.radio if r.key == "app_main_navigation"]
+        if nav_radios:
+            nav_radios[0].select(store_option).run()
+
+    assert not at.exception
+
+
+def test_render_per_product_view_callable():
+    """Verify render_per_product_view function is defined and signature matches required parameters."""
+    import inspect
+    sig = inspect.signature(render_per_product_view)
+    param_names = list(sig.parameters.keys())
+    assert "sim_result" in param_names
+    assert "sim_days" in param_names
+    assert "t2" in param_names
+    assert "d2" in param_names
+    assert "t1" in param_names
+    assert "d1" in param_names
+    assert "seed_val" in param_names
 
 
 
@@ -1016,3 +1058,226 @@ def test_headless_apptest_navigation_and_product_selection():
 
 
 
+
+
+
+
+def test_create_sim_product_sales_vs_price_chart_structure(sample_sim_result):
+    """Verify dual-axis Sales vs Selling Price chart has proper title, traces, colors, and axes."""
+    df = sample_sim_result.daily_history_df
+    p_df = df[(df["product_id"] == "PROD-01") & (df["policy"] == "markdown")].sort_values("day")
+
+    fig = create_sim_product_sales_vs_price_chart(p_df, "Toned Fresh Milk")
+    assert isinstance(fig, go.Figure)
+    assert "Daily Sales vs Actual Selling Price" in fig.layout.title.text
+
+    # 3 Traces: Units Sold (Blue), Actual Selling Price (Orange), Markdown Events (Red)
+    trace_names = [t.name for t in fig.data]
+    assert "Daily Units Sold" in trace_names
+    assert "Actual Selling Price (₹)" in trace_names
+    assert "Markdown Clearance Event" in trace_names
+
+    # Trace colors and axes
+    t_sales = [t for t in fig.data if t.name == "Daily Units Sold"][0]
+    t_price = [t for t in fig.data if t.name == "Actual Selling Price (₹)"][0]
+    t_md = [t for t in fig.data if t.name == "Markdown Clearance Event"][0]
+
+    assert t_sales.line.color == "#1F77B4"
+    assert t_price.line.color == "#FF7F0E"
+    assert t_md.marker.color == "#DC2626"
+    assert t_sales.yaxis in ["y", "y1", None]
+    assert t_price.yaxis == "y2"
+    assert t_md.yaxis == "y2"
+
+    # Layout axes
+    assert fig.layout.yaxis.title.text is not None and "Units Sold" in fig.layout.yaxis.title.text
+    assert fig.layout.yaxis2.title.text is not None and "Actual Selling Price" in fig.layout.yaxis2.title.text
+    assert fig.layout.yaxis2.side == "right"
+    assert fig.layout.yaxis2.overlaying == "y"
+
+    # Hover templates
+    assert "Daily Units Sold" in t_sales.hovertemplate
+    assert "Actual Selling Price" in t_price.hovertemplate
+    assert "Days to Expiry" in t_sales.hovertemplate
+    assert "Markdown Status" in t_sales.hovertemplate
+
+    # Annotations for markdown events
+    assert len(fig.layout.annotations) > 0
+    for ann in fig.layout.annotations:
+        assert "% Off" in ann.text
+        assert ann.bgcolor == "#DC2626"
+
+
+def test_sales_vs_price_chart_empty_dataframe():
+    """Verify empty dataframe produces clean empty-state figure rather than misleading chart."""
+    empty_df = pd.DataFrame()
+    fig = create_sim_product_sales_vs_price_chart(empty_df, "Missing Product")
+    assert isinstance(fig, go.Figure)
+    assert len(fig.layout.annotations) == 1
+    assert "No recorded sales or price history available" in fig.layout.annotations[0].text
+
+
+def test_sales_vs_price_chart_zero_markdowns(sample_sim_result):
+    """Verify product with zero markdowns (e.g. PROD-03) has 2 traces, flat price, and 0 markdown markers."""
+    df = sample_sim_result.daily_history_df
+    p_df = df[(df["product_id"] == "PROD-03") & (df["policy"] == "markdown")].sort_values("day")
+
+    fig = create_sim_product_sales_vs_price_chart(p_df, "Fresh Curd / Dahi")
+    assert len(fig.data) == 2
+    trace_names = [t.name for t in fig.data]
+    assert "Daily Units Sold" in trace_names
+    assert "Actual Selling Price (₹)" in trace_names
+    assert "Markdown Clearance Event" not in trace_names
+    assert len(fig.layout.annotations) == 0
+
+
+def test_sales_and_price_day_alignment(sample_sim_result):
+    """Verify sales and prices are strictly aligned to identical simulation days."""
+    df = sample_sim_result.daily_history_df
+    p_df = df[(df["product_id"] == "PROD-01") & (df["policy"] == "markdown")].sort_values("day")
+
+    fig = create_sim_product_sales_vs_price_chart(p_df, "Toned Fresh Milk")
+    t_sales = [t for t in fig.data if t.name == "Daily Units Sold"][0]
+    t_price = [t for t in fig.data if t.name == "Actual Selling Price (₹)"][0]
+
+    assert list(t_sales.x) == list(t_price.x)
+    assert list(t_sales.x) == list(range(1, 31))
+
+
+def test_markdown_status_and_margin_floor_limiting():
+    """Verify reason PROD-01 shows ~4% discount is margin floor clamping (3.7% max discount on 13.3% margin)."""
+    res_10 = run_dashboard_simulation(sim_days=30, seed=42, min_gross_margin_pct=10.0)
+    df = res_10.daily_history_df
+    p_df = df[(df["product_id"] == "PROD-01") & (df["policy"] == "markdown")].sort_values("day")
+
+    md_days = p_df[p_df["discount_pct"] > 0]
+    assert len(md_days) > 0
+    # At 10% floor on 13.33% margin: max discount is 3.70% (which rounds to 4% in integer UI display)
+    for _, row in md_days.iterrows():
+        assert abs(row["discount_pct"] - 3.70) < 0.1
+        assert abs(row["selling_price"] - 57.78) < 0.1
+
+    # Verify that in markdown_events_df, margin_floor_limited is True
+    ev_df = res_10.markdown_events_df[res_10.markdown_events_df["product_id"] == "PROD-01"]
+    assert len(ev_df) > 0
+    assert (ev_df["margin_floor_limited"] == True).all()
+
+    # Verify that when floor is 0%, discount reaches cost floor (13.33%)
+    res_0 = run_dashboard_simulation(sim_days=30, seed=42, min_gross_margin_pct=0.0)
+    p_df_0 = res_0.daily_history_df[(res_0.daily_history_df["product_id"] == "PROD-01") & (res_0.daily_history_df["policy"] == "markdown")].sort_values("day")
+    md_days_0 = p_df_0[p_df_0["discount_pct"] > 0]
+    for _, row in md_days_0.iterrows():
+        assert abs(row["discount_pct"] - 13.33) < 0.1
+        assert abs(row["selling_price"] - 52.00) < 0.1
+
+
+def test_expiry_and_waste_unsold_inventory_reconciliation(sample_sim_result):
+    """Verify that all unsold inventory reaching expiry is strictly wasted with zero inventory leakage."""
+    products = get_default_products()
+    arrivals = generate_arrival_schedule(products, sim_days=30, seed=42)
+
+    for p in products:
+        p_arrivals = [b for b in arrivals if b.product_id == p.product_id]
+        tot_recv = sum(b.initial_quantity for b in p_arrivals)
+
+        p_md = sample_sim_result.daily_history_df[
+            (sample_sim_result.daily_history_df["product_id"] == p.product_id) &
+            (sample_sim_result.daily_history_df["policy"] == "markdown")
+        ]
+        sold = p_md["units_sold"].sum()
+        wasted = p_md["units_wasted"].sum()
+        ending = p_md.iloc[-1]["ending_stock"]
+
+        # Conservation identity: Received = Sold + Wasted + Ending Stock
+        assert abs(tot_recv - (sold + wasted + ending)) < 1e-4
+
+
+
+def test_create_sim_product_price_vs_sales_chart_structure(sample_sim_result):
+    """Verify Price vs Units Sold chart structure, axes, traces, and ascending order."""
+    df = sample_sim_result.daily_history_df
+    p_df = df[(df["product_id"] == "PROD-01") & (df["policy"] == "markdown")]
+
+    fig = create_sim_product_price_vs_sales_chart(p_df, "Toned Fresh Milk")
+    assert isinstance(fig, go.Figure)
+    assert "Price vs Units Sold" in fig.layout.title.text
+
+    trace_names = [t.name for t in fig.data]
+    assert "Price vs Sales Curve" in trace_names
+    assert "Markdown Clearance Observations" in trace_names
+
+    t_curve = [t for t in fig.data if t.name == "Price vs Sales Curve"][0]
+    t_md = [t for t in fig.data if t.name == "Markdown Clearance Observations"][0]
+
+    # Mode and markers
+    assert "lines" in t_curve.mode and "markers" in t_curve.mode
+    assert t_md.marker.color == "#DC2626"
+    assert t_md.marker.symbol == "diamond"
+
+    # Ascending price order verification
+    x_prices = list(t_curve.x)
+    assert x_prices == sorted(x_prices)
+
+    # Hover templates
+    assert "Simulation Day" in t_curve.hovertemplate
+    assert "Actual Selling Price" in t_curve.hovertemplate
+    assert "Units Sold" in t_curve.hovertemplate
+    assert "Days to Expiry" in t_curve.hovertemplate
+    assert "Discount Applied" in t_curve.hovertemplate
+
+    # Layout axes
+    assert "Actual Selling Price" in fig.layout.xaxis.title.text
+    assert "Units Sold" in fig.layout.yaxis.title.text
+
+
+def test_price_vs_sales_chart_product_filtering(sample_sim_result):
+    """Verify Price vs Units Sold chart strictly filters to the selected product's records."""
+    df = sample_sim_result.daily_history_df
+    p_df = df[(df["product_id"] == "PROD-02") & (df["policy"] == "markdown")]
+
+    fig = create_sim_product_price_vs_sales_chart(p_df, "Full Cream Fresh Milk")
+    t_curve = [t for t in fig.data if t.name == "Price vs Sales Curve"][0]
+
+    # Verify all plotted points match PROD-02's simulation days
+    assert len(t_curve.x) == 30
+    assert len(t_curve.y) == 30
+    # Base price of PROD-02 is ₹74.00; selling prices should be <= 74.00
+    assert all(p <= 74.00 for p in t_curve.x)
+
+
+def test_price_vs_sales_chart_repeated_prices_preserved(sample_sim_result):
+    """Verify multiple days sharing identical selling price are all preserved as distinct observations."""
+    df = sample_sim_result.daily_history_df
+    p_df = df[(df["product_id"] == "PROD-01") & (df["policy"] == "markdown")]
+
+    fig = create_sim_product_price_vs_sales_chart(p_df, "Toned Fresh Milk")
+    t_curve = [t for t in fig.data if t.name == "Price vs Sales Curve"][0]
+
+    # Exactly 30 days should be preserved in the curve (none combined)
+    assert len(t_curve.x) == 30
+    assert len(t_curve.y) == 30
+
+    # Days with price 60.00
+    pts_60 = [y for x, y in zip(t_curve.x, t_curve.y) if abs(x - 60.0) < 0.01]
+    assert len(pts_60) > 1, "Must preserve each day's distinct sales point for identical prices"
+
+
+def test_price_vs_sales_chart_zero_sales():
+    """Verify days with zero sales are safely plotted and preserved."""
+    custom_df = pd.DataFrame([
+        {"day": 1, "selling_price": 50.0, "units_sold": 0.0, "discount_pct": 0.0, "days_until_expiry": 3, "regular_price": 50.0},
+        {"day": 2, "selling_price": 40.0, "units_sold": 15.0, "discount_pct": 20.0, "days_until_expiry": 1, "regular_price": 50.0},
+    ])
+    fig = create_sim_product_price_vs_sales_chart(custom_df, "Test Zero Sales Product")
+    t_curve = [t for t in fig.data if t.name == "Price vs Sales Curve"][0]
+    assert 0.0 in list(t_curve.y)
+    assert list(t_curve.x) == [40.0, 50.0]  # Ascending price order
+
+
+def test_price_vs_sales_chart_empty_history():
+    """Verify empty dataframe displays appropriate empty-state message."""
+    empty_df = pd.DataFrame()
+    fig = create_sim_product_price_vs_sales_chart(empty_df, "Unknown SKU")
+    assert isinstance(fig, go.Figure)
+    assert len(fig.layout.annotations) == 1
+    assert "No recorded sales or price history available" in fig.layout.annotations[0].text

@@ -484,6 +484,328 @@ def create_sim_product_sales_waste_chart(p_md_df: pd.DataFrame, product_name: st
     return fig
 
 
+def create_sim_product_sales_vs_price_chart(p_md_df: pd.DataFrame, product_name: str) -> go.Figure:
+    """Create an interactive Plotly dual-axis chart titled 'Daily Sales vs Actual Selling Price'.
+
+    Left Y-axis (Blue line): Daily units sold.
+    Right Y-axis (Orange line): Actual selling price in INR (₹).
+    Red markers and annotations: Actual clearance markdown events with discount percentage.
+    Hover tooltip: Day, units sold, actual selling price, days to expiry, and markdown status.
+    """
+    if p_md_df is None or p_md_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"No recorded sales or price history available for {product_name}.",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=14, color="#64748B"),
+        )
+        fig.update_layout(
+            title=f"<b>Daily Sales vs Actual Selling Price — {product_name}</b>",
+            template="plotly_white",
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#FFFFFF",
+        )
+        return fig
+
+    p_sorted = p_md_df.sort_values("day").copy()
+
+    # Build rich 5-tuple hover data for all simulation days
+    custom_data = []
+    for _, row in p_sorted.iterrows():
+        d_pct = float(row.get("discount_pct", 0.0))
+        d_exp = int(row.get("days_until_expiry", 0))
+        exp_str = f"{d_exp} day" if d_exp == 1 else f"{d_exp} days"
+        status_str = f"🔥 Markdown ({d_pct:.0f}% Off)" if d_pct > 0 else "Regular Full Price"
+        custom_data.append([
+            float(row.get("units_sold", 0.0)),
+            float(row.get("selling_price", 0.0)),
+            exp_str,
+            status_str,
+            float(row.get("regular_price", 0.0)),
+            d_pct,
+        ])
+
+    fig = go.Figure()
+
+    # 1. Blue Line: Daily Units Sold (Left Y-Axis)
+    fig.add_trace(
+        go.Scatter(
+            name="Daily Units Sold",
+            x=p_sorted["day"],
+            y=p_sorted["units_sold"],
+            mode="lines+markers",
+            line=dict(color="#1F77B4", width=2.4),
+            marker=dict(size=5, color="#1F77B4"),
+            yaxis="y1",
+            customdata=custom_data,
+            hovertemplate=(
+                "<b>Simulation Day: Day %{x}</b><br>"
+                "Daily Units Sold: %{customdata[0]:,.1f} units<br>"
+                "Actual Selling Price: ₹%{customdata[1]:,.2f}<br>"
+                "Days to Expiry: %{customdata[2]}<br>"
+                "Markdown Status: %{customdata[3]}<extra></extra>"
+            ),
+        )
+    )
+
+    # 2. Orange Line: Actual Selling Price (Right Y-Axis)
+    fig.add_trace(
+        go.Scatter(
+            name="Actual Selling Price (₹)",
+            x=p_sorted["day"],
+            y=p_sorted["selling_price"],
+            mode="lines+markers",
+            line=dict(color="#FF7F0E", width=2.5),
+            marker=dict(size=5, color="#FF7F0E"),
+            yaxis="y2",
+            customdata=custom_data,
+            hovertemplate=(
+                "<b>Simulation Day: Day %{x}</b><br>"
+                "Daily Units Sold: %{customdata[0]:,.1f} units<br>"
+                "Actual Selling Price: ₹%{customdata[1]:,.2f}<br>"
+                "Days to Expiry: %{customdata[2]}<br>"
+                "Markdown Status: %{customdata[3]}<extra></extra>"
+            ),
+        )
+    )
+
+    # 3. Red Markers & Annotations: Actual Markdown Clearance Events
+    md_evts = p_sorted[p_sorted["discount_pct"] > 0]
+    if not md_evts.empty:
+        md_custom = []
+        for _, row in md_evts.iterrows():
+            d_pct = float(row.get("discount_pct", 0.0))
+            d_exp = int(row.get("days_until_expiry", 0))
+            exp_str = f"{d_exp} day" if d_exp == 1 else f"{d_exp} days"
+            status_str = f"🔥 Markdown ({d_pct:.0f}% Off)"
+            md_custom.append([
+                float(row.get("units_sold", 0.0)),
+                float(row.get("selling_price", 0.0)),
+                exp_str,
+                status_str,
+                float(row.get("regular_price", 0.0)),
+                d_pct,
+            ])
+
+        fig.add_trace(
+            go.Scatter(
+                name="Markdown Clearance Event",
+                x=md_evts["day"],
+                y=md_evts["selling_price"],
+                mode="markers",
+                marker=dict(
+                    size=11,
+                    color="#DC2626",
+                    symbol="circle",
+                    line=dict(width=2, color="#991B1B"),
+                ),
+                yaxis="y2",
+                customdata=md_custom,
+                hovertemplate=(
+                    "<b>🔥 Markdown Event — Day %{x}</b><br>"
+                    "Daily Units Sold: %{customdata[0]:,.1f} units<br>"
+                    "Actual Selling Price: ₹%{customdata[1]:,.2f}<br>"
+                    "Days to Expiry: %{customdata[2]}<br>"
+                    "Markdown Status: %{customdata[3]}<extra></extra>"
+                ),
+            )
+        )
+
+        # Badges / Annotations pointing to markdown price points
+        for _, row in md_evts.iterrows():
+            d_pct = float(row["discount_pct"])
+            fig.add_annotation(
+                x=row["day"],
+                y=row["selling_price"],
+                yref="y2",
+                text=f"{d_pct:.0f}% Off",
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=1,
+                arrowwidth=1.5,
+                arrowcolor="#DC2626",
+                ax=0,
+                ay=-20,
+                font=dict(size=9, color="#FFFFFF", family="Inter, sans-serif"),
+                bgcolor="#DC2626",
+                bordercolor="#991B1B",
+                borderwidth=1,
+                borderpad=2,
+                opacity=0.95,
+            )
+
+    fig.update_layout(
+        title=f"<b>Daily Sales vs Actual Selling Price — {product_name}</b>",
+        template="plotly_white",
+        xaxis=dict(
+            title="<b>Simulation Day</b>",
+            gridcolor="#F1F5F9",
+            linecolor="#CBD5E1",
+            tickmode="linear",
+            tick0=1,
+            dtick=2,
+        ),
+        yaxis=dict(
+            title=dict(text="<b>Units Sold (Units)</b>", font=dict(color="#1F77B4")),
+            gridcolor="#F1F5F9",
+            linecolor="#CBD5E1",
+            tickfont=dict(color="#1F77B4"),
+        ),
+        yaxis2=dict(
+            title=dict(text="<b>Actual Selling Price (₹)</b>", font=dict(color="#FF7F0E")),
+            overlaying="y",
+            side="right",
+            showgrid=False,
+            linecolor="#CBD5E1",
+            tickprefix="₹",
+            tickfont=dict(color="#FF7F0E"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
+        margin=dict(l=45, r=55, t=70, b=40),
+        font=dict(family="Inter, -apple-system, sans-serif", size=12, color="#1E293B"),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+    return fig
+
+
+def create_sim_product_price_vs_sales_chart(p_md_df: pd.DataFrame, product_name: str) -> go.Figure:
+    """Create an interactive Plotly line chart titled 'Price vs Units Sold — {product_name}'.
+
+    X-axis: Actual selling price per unit in INR (₹).
+    Y-axis: Units sold.
+    Chart type: Line chart with visible data-point markers, connected in ascending price order.
+    Markdown observations: Highlighted with distinct markers.
+    Hover details: Simulation day, actual selling price, units sold, days to expiry, and discount percentage.
+    """
+    if p_md_df is None or p_md_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"No recorded sales or price history available for {product_name}.",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=14, color="#64748B"),
+        )
+        fig.update_layout(
+            title=f"<b>Price vs Units Sold — {product_name}</b>",
+            template="plotly_white",
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#FFFFFF",
+        )
+        return fig
+
+    # Sort strictly by ascending selling price, then simulation day to preserve each day's observation
+    p_sorted = p_md_df.sort_values(["selling_price", "day"]).copy()
+
+    # Helper function to construct rich 5-tuple hover customdata
+    def _build_customdata(sub_df: pd.DataFrame):
+        cd = []
+        for _, row in sub_df.iterrows():
+            d_day = int(row.get("day", 1))
+            d_exp = int(row.get("days_until_expiry", 0))
+            exp_str = f"{d_exp} day" if d_exp == 1 else f"{d_exp} days"
+            d_pct = float(row.get("discount_pct", 0.0))
+            status_str = f"Markdown ({d_pct:.0f}% Off)" if d_pct > 0 else "Regular Full Price"
+            cd.append([
+                d_day,
+                exp_str,
+                d_pct,
+                status_str,
+                float(row.get("regular_price", 0.0)),
+            ])
+        return cd
+
+    fig = go.Figure()
+
+    # 1. Connected Line Chart across all observations in ascending price order
+    fig.add_trace(
+        go.Scatter(
+            name="Price vs Sales Curve",
+            x=p_sorted["selling_price"],
+            y=p_sorted["units_sold"],
+            mode="lines+markers",
+            line=dict(color="#2563EB", width=2.0),
+            marker=dict(size=7, color="#1D4ED8", symbol="circle"),
+            customdata=_build_customdata(p_sorted),
+            hovertemplate=(
+                "<b>Simulation Day: Day %{customdata[0]}</b><br>"
+                "Actual Selling Price: ₹%{x:,.2f}<br>"
+                "Units Sold: %{y:,.1f} units<br>"
+                "Days to Expiry: %{customdata[1]}<br>"
+                "Discount Applied: %{customdata[2]:.1f}% (%{customdata[3]})<extra></extra>"
+            ),
+        )
+    )
+
+    # 2. Highlight Markdown-Period Observations with distinct markers
+    md_df = p_sorted[p_sorted["discount_pct"] > 0]
+    if not md_df.empty:
+        fig.add_trace(
+            go.Scatter(
+                name="Markdown Clearance Observations",
+                x=md_df["selling_price"],
+                y=md_df["units_sold"],
+                mode="markers",
+                marker=dict(
+                    size=12,
+                    color="#DC2626",
+                    symbol="diamond",
+                    line=dict(width=1.8, color="#991B1B"),
+                ),
+                customdata=_build_customdata(md_df),
+                hovertemplate=(
+                    "<b>🔥 Markdown Event — Day %{customdata[0]}</b><br>"
+                    "Actual Selling Price: ₹%{x:,.2f}<br>"
+                    "Units Sold: %{y:,.1f} units<br>"
+                    "Days to Expiry: %{customdata[1]}<br>"
+                    "Discount Applied: %{customdata[2]:.1f}% (%{customdata[3]})<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title=f"<b>Price vs Units Sold — {product_name}</b>",
+        template="plotly_white",
+        xaxis=dict(
+            title="<b>Actual Selling Price (₹)</b>",
+            gridcolor="#F1F5F9",
+            linecolor="#CBD5E1",
+            tickprefix="₹",
+            tickformat=",.2f",
+        ),
+        yaxis=dict(
+            title="<b>Units Sold (Units)</b>",
+            gridcolor="#F1F5F9",
+            linecolor="#CBD5E1",
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
+        margin=dict(l=45, r=40, t=70, b=40),
+        font=dict(family="Inter, -apple-system, sans-serif", size=12, color="#1E293B"),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+    return fig
+
+
 def create_historical_price_chart(product_df: pd.DataFrame, product_name: str) -> go.Figure:
     """Create an interactive time-series graph comparing Regular Price vs Actual Selling Price in INR (₹)."""
     fig = go.Figure()
@@ -1295,6 +1617,219 @@ def render_shopper_deals_view(
     st.caption("ℹ️ **Simulation demo: all prices, inventory levels, and clearance offers are generated from synthetic data. No real transactions are available.**")
 
 
+def render_per_product_view(
+    sim_result,
+    sim_days: int,
+    t2: int,
+    d2: float,
+    t1: int,
+    d1: float,
+    seed_val: int,
+    min_margin: float = 10.0,
+) -> None:
+    """Render dedicated Per-Product Markdown History & Operational Ledger view."""
+    # Metadata Bar
+    render_html(
+        f"""
+        <div class="metadata-bar">
+            <span>⏱️ Duration: <b>{sim_days} Days</b></span>
+            <span>🎲 Seed: <b>{seed_val}</b></span>
+            <span>📏 Clearance Rules: <b>≤{t2}d: {d2:.0f}% | ≤{t1}d: {d1:.0f}%</b> (Floor ≥{min_margin:.0f}%)</span>
+            <span>🛒 <b>20 Perishable SKUs</b></span>
+            <span>🧪 <i>Synthetic Perishables Dataset (NEXAI 2026 PS 4.1 Demo)</i></span>
+        </div>
+        """
+    )
+
+    render_html('<div class="section-header">Per-Product Markdown History & Operational Ledger</div>')
+    render_html(
+        '<div class="section-subtext">Inspect SKU-level price trajectories, recorded markdown events, daily inventory movements, and batch reconciliation identity across 20 perishable products:</div>'
+    )
+
+    products = get_default_products()
+    prod_names = [p.name for p in products]
+
+    col_psel1, col_psel2 = st.columns([1, 2])
+    with col_psel1:
+        selected_prod_name = st.selectbox(
+            "Select Perishable Product (20 Products):",
+            options=prod_names,
+            index=0,
+            key="sim_product_select",
+        )
+    selected_prod = [p for p in products if p.name == selected_prod_name][0]
+    p_id = selected_prod.product_id
+
+    # Selected product daily records under Markdown Policy and Fixed Policy
+    p_md_df = sim_result.daily_history_df[
+        (sim_result.daily_history_df["product_id"] == p_id) & (sim_result.daily_history_df["policy"] == "markdown")
+    ].sort_values("day")
+    p_fixed_df = sim_result.daily_history_df[
+        (sim_result.daily_history_df["product_id"] == p_id) & (sim_result.daily_history_df["policy"] == "fixed")
+    ].sort_values("day")
+
+    p_sold_md = float(p_md_df["units_sold"].sum())
+    p_waste_md = float(p_md_df["units_wasted"].sum())
+    p_waste_fixed = float(p_fixed_df["units_wasted"].sum())
+    p_md_events_cnt = int((p_md_df["discount_pct"] > 0).sum())
+
+    with col_psel2:
+        col_pk1, col_pk2, col_pk3, col_pk4 = st.columns(4)
+        with col_pk1:
+            st.metric("Category & SKU", f"{selected_prod.category.title()}", delta=p_id)
+        with col_pk2:
+            st.metric("Base Price & Cost", f"₹{selected_prod.base_price:.2f}", delta=f"Cost ₹{selected_prod.unit_cost:.2f}")
+        with col_pk3:
+            st.metric(
+                "Base Margin (%)",
+                f"{((selected_prod.base_price - selected_prod.unit_cost)/selected_prod.base_price*100):.1f}%",
+                delta=f"{selected_prod.shelf_life_days}d shelf life",
+            )
+        with col_pk4:
+            st.metric(
+                "Markdown Waste",
+                f"{p_waste_md:.1f} units",
+                delta=f"{p_waste_md - p_waste_fixed:+.1f} vs Fixed",
+                delta_color="inverse",
+            )
+
+    # 1. Primary Interactive Visualizations: Timeline & Price-Demand Curve
+    if p_md_df is None or p_md_df.empty:
+        st.info(f"ℹ️ No recorded sales or price history available for **{selected_prod_name}** ({p_id}).")
+    else:
+        fig_dual = create_sim_product_sales_vs_price_chart(p_md_df, selected_prod_name)
+        st.plotly_chart(fig_dual, use_container_width=True)
+
+        fig_price_sales = create_sim_product_price_vs_sales_chart(p_md_df, selected_prod_name)
+        st.plotly_chart(fig_price_sales, use_container_width=True)
+
+    # 2. Supplementary Visualizations: Trajectory & Velocity
+    with st.expander("📊 Additional Price & Inventory Breakdown Charts", expanded=False):
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.plotly_chart(create_sim_product_price_chart(p_md_df, selected_prod_name), use_container_width=True)
+        with col_c2:
+            st.plotly_chart(create_sim_product_sales_waste_chart(p_md_df, selected_prod_name), use_container_width=True)
+
+    if p_md_events_cnt == 0:
+        st.info(
+            f"ℹ️ **Constant Price Trajectory**: No markdown events occurred for **{selected_prod_name}** ({p_id}) during this {sim_days}-day simulation. "
+            f"The selling price remained strictly flat at the regular catalog price of ₹{selected_prod.base_price:.2f} across all simulation days because all batches had sufficient shelf life or cleared at full price."
+        )
+    else:
+        event_days = p_md_df[p_md_df["discount_pct"] > 0]["day"].tolist()
+        days_str = ", ".join(f"Day {d}" for d in event_days)
+        st.caption(
+            f"🏷️ **Active Markdowns Applied**: Selling price dropped below base price on {len(event_days)} days ({days_str}) "
+            f"under configured clearance rules (≤ {t2}d: {d2:.0f}% | ≤ {t1}d: {d1:.0f}%)."
+        )
+        # Margin Floor Safeguard Audit Notice
+        prod_events_df = (
+            sim_result.markdown_events_df[sim_result.markdown_events_df["product_id"] == p_id]
+            if not sim_result.markdown_events_df.empty
+            else pd.DataFrame()
+        )
+        if not prod_events_df.empty and "margin_floor_limited" in prod_events_df.columns and prod_events_df["margin_floor_limited"].any():
+            floor_limited_cnt = int(prod_events_df["margin_floor_limited"].sum())
+            cat_margin = ((selected_prod.base_price - selected_prod.unit_cost) / selected_prod.base_price) * 100.0
+            st.caption(
+                f"🛡️ **Margin Floor Clamping Notice**: Exactly {floor_limited_cnt} clearance event(s) were clamped by the **{min_margin:.0f}% Gross Margin Floor** "
+                f"(Base Price: ₹{selected_prod.base_price:.2f}, Wholesale Cost: ₹{selected_prod.unit_cost:.2f}, Catalog Margin: {cat_margin:.1f}%). "
+                f"To protect profitability, discounts were safely bounded to prevent selling below the margin floor."
+            )
+
+    # Markdown Event History Table for Selected Product
+    prod_events = (
+        sim_result.markdown_events_df[sim_result.markdown_events_df["product_id"] == p_id].copy()
+        if not sim_result.markdown_events_df.empty
+        else pd.DataFrame()
+    )
+    with st.expander(f"📜 Recorded Markdown Events History for {selected_prod_name} ({len(prod_events)} Events)", expanded=len(prod_events) > 0):
+        if prod_events.empty:
+            st.info(
+                f"ℹ️ **No markdown events were recorded for {selected_prod_name} ({p_id})** during this {sim_days}-day simulation.\n\n"
+                f"All inventory batches for this product maintained sufficient shelf life (> {t2} days remaining) or cleared through natural customer demand at the regular price of ₹{selected_prod.base_price:.2f} without requiring promotional price reductions."
+            )
+        else:
+            evt_disp = prod_events.copy()
+            evt_disp["calculated_discount_pct"] = (
+                (evt_disp["regular_price"] - evt_disp["selling_price"]) / evt_disp["regular_price"] * 100.0
+            ).round(1)
+
+            if "available_stock" not in evt_disp.columns or evt_disp["available_stock"].isna().all() or (evt_disp["available_stock"] == 0).all():
+                p_avail_map = dict(zip(p_md_df["day"], p_md_df["units_sold"] + p_md_df["ending_stock"]))
+                evt_disp["available_stock"] = evt_disp["day"].map(p_avail_map).fillna(evt_disp["units_sold"])
+
+            evt_disp["Simulation Day"] = evt_disp["day"].apply(lambda d: f"Day {d}")
+            evt_disp["Product Name"] = selected_prod_name
+            evt_disp["SKU"] = p_id
+            evt_disp["Days to Expiry"] = evt_disp["days_until_expiry"].apply(lambda d: f"{int(d)} {'day' if int(d)==1 else 'days'}")
+            evt_disp["Regular Base Price"] = evt_disp["regular_price"].apply(lambda p: f"₹{p:.2f}")
+            evt_disp["Actual Markdown Price"] = evt_disp["selling_price"].apply(lambda p: f"₹{p:.2f}")
+            evt_disp["Discount %"] = evt_disp["calculated_discount_pct"].apply(lambda d: f"{d:.1f}%")
+            evt_disp["Available Stock"] = evt_disp["available_stock"].apply(lambda s: f"{s:,.1f} units")
+            evt_disp["Units Sold"] = evt_disp["units_sold"].apply(lambda u: f"{u:,.1f} units")
+            evt_disp["Markdown Trigger Reason"] = evt_disp["reason"]
+
+            out_cols = [
+                "Simulation Day", "Product Name", "SKU", "Days to Expiry",
+                "Regular Base Price", "Actual Markdown Price", "Discount %",
+                "Available Stock", "Units Sold", "Markdown Trigger Reason"
+            ]
+            st.dataframe(evt_disp[out_cols], use_container_width=True, hide_index=True)
+            st.caption(
+                f"✅ **Audit Trail**: Exactly {len(prod_events)} genuine clearance events recorded from simulation. "
+                f"Discount percentages strictly calculated as `(Base Price - Markdown Price) / Base Price`."
+            )
+
+    # Daily Sales, Inventory & Spoilage Ledger
+    with st.expander(f"📋 Daily Sales, Inventory & Spoilage Ledger — {selected_prod_name} ({sim_days} Days)", expanded=True):
+        ledger_disp = p_md_df.copy()
+        ledger_disp["avail_stock"] = ledger_disp["units_sold"] + ledger_disp["ending_stock"]
+        ledger_disp["Simulation Day"] = ledger_disp["day"].apply(lambda d: f"Day {d}")
+        ledger_disp["Available Stock"] = ledger_disp["avail_stock"].apply(lambda s: f"{s:,.1f} units")
+        ledger_disp["Units Sold"] = ledger_disp["units_sold"].apply(lambda s: f"{s:,.1f} units")
+        ledger_disp["Units Expired / Wasted"] = ledger_disp["units_wasted"].apply(lambda w: f"{w:,.1f} units")
+        ledger_disp["Ending Stock"] = ledger_disp["ending_stock"].apply(lambda e: f"{e:,.1f} units")
+        ledger_disp["Actual Selling Price"] = ledger_disp["selling_price"].apply(lambda p: f"₹{p:.2f}")
+        ledger_disp["Markdown Status"] = ledger_disp["discount_pct"].apply(
+            lambda d: f"🔥 Markdown ({d:.0f}% Off)" if d > 0 else "Regular Full Price"
+        )
+        ledger_disp["Waste Cost"] = ledger_disp["waste_cost"].apply(lambda c: f"₹{c:.2f}" if c > 0 else "₹0.00")
+        ledger_disp["Days to Expiry"] = ledger_disp["days_until_expiry"].apply(lambda d: f"{int(d)}d")
+
+        ledger_cols = [
+            "Simulation Day", "Days to Expiry", "Available Stock", "Units Sold",
+            "Units Expired / Wasted", "Ending Stock", "Actual Selling Price",
+            "Markdown Status", "Waste Cost"
+        ]
+        st.dataframe(ledger_disp[ledger_cols], use_container_width=True, hide_index=True)
+
+        # Product-Level Inventory Reconciliation Identity
+        arrivals_all = generate_arrival_schedule(products, sim_days=sim_days, seed=seed_val)
+        prod_batches = [b for b in arrivals_all if b.product_id == p_id]
+        tot_received = sum(b.initial_quantity for b in prod_batches)
+        end_qty = float(p_md_df.iloc[-1]["ending_stock"]) if not p_md_df.empty else 0.0
+        tot_waste_cost = float(p_md_df["waste_cost"].sum())
+        tot_revenue = float(p_md_df["revenue"].sum())
+
+        col_lr1, col_lr2, col_lr3, col_lr4 = st.columns(4)
+        with col_lr1:
+            st.metric("Total Batches Received", f"{tot_received:,.0f} units", delta=f"{len(prod_batches)} Batches Scheduled")
+        with col_lr2:
+            st.metric("Total Units Sold", f"{p_sold_md:,.1f} units", delta=f"Revenue: {format_inr(tot_revenue)}")
+        with col_lr3:
+            st.metric("Total Units Expired / Wasted", f"{p_waste_md:,.1f} units", delta=f"Waste Cost: {format_inr(tot_waste_cost)}", delta_color="inverse")
+        with col_lr4:
+            st.metric(f"Ending Closing Stock (Day {sim_days})", f"{end_qty:,.1f} units", delta="Inventory Conserved ✅")
+
+        st.caption(
+            f"⚖️ **Product Inventory Conservation Identity**: {tot_received:,.1f} Total Received = "
+            f"{p_sold_md:,.1f} Sold + {p_waste_md:,.1f} Wasted + {end_qty:,.1f} Ending Inventory. "
+            f"(100% reconciled with store simulation)."
+        )
+
+
 def render_category_optimizer_tab(sim_days: int, min_margin: float) -> None:
     """Render Category-Specific Markdown Optimizer tab."""
     st.markdown("### 🏷️ Category-Specific Markdown Optimizer (PS 4.1 Stretch Goal)")
@@ -1572,7 +2107,7 @@ def main() -> None:
     m = sim_result.markdown_metrics
 
     # 3. Top-Level Header & Navigation Component
-    col_header, col_nav = st.columns([1.6, 1.4])
+    col_header, col_nav = st.columns([1.25, 1.75])
     with col_header:
         render_html(
             """
@@ -1586,7 +2121,7 @@ def main() -> None:
             """
         )
     with col_nav:
-        nav_options = ["Store Operations", "Today's Fresh Deals"]
+        nav_options = ["Store Operations", "Per-Product View", "Today's Fresh Deals"]
         if hasattr(st, "segmented_control"):
             active_view = st.segmented_control(
                 "Application View",
@@ -1606,7 +2141,7 @@ def main() -> None:
             )
         active_view = active_view or "Store Operations"
 
-    # Route: Today's Fresh Deals View
+    # Route 1: Today's Fresh Deals View
     if "Today's Fresh Deals" in active_view:
         render_shopper_deals_view(
             daily_df=sim_result.daily_history_df,
@@ -1625,7 +2160,29 @@ def main() -> None:
         )
         return
 
-    # Route: Store Operations View
+    # Route 2: Per-Product View
+    if "Per-Product View" in active_view:
+        render_per_product_view(
+            sim_result=sim_result,
+            sim_days=int(sim_days),
+            t2=int(t2),
+            d2=float(d2),
+            t1=int(t1),
+            d1=float(d1),
+            seed_val=int(seed_val),
+            min_margin=float(min_margin),
+        )
+        render_html(
+            """
+            <div class="minimal-footer">
+                <b>FreshPrice AI</b> • NEXAI 2026 Hackathon (Track 4: Grocery Retail, PS 4.1)<br>
+                <i>Simulation demo: all prices, inventory levels, and clearance offers are generated from synthetic data. Physical inventory conservation strictly enforced.</i>
+            </div>
+            """
+        )
+        return
+
+    # Route 3: Store Operations View (Default)
     waste_saved = round(f.units_wasted - m.units_wasted, 1)
     waste_red_pct = round(((f.units_wasted - m.units_wasted) / f.units_wasted * 100.0), 2) if f.units_wasted > 0 else 0.0
     units_sold_gain = round(m.units_sold - f.units_sold, 1)
@@ -1788,147 +2345,17 @@ def main() -> None:
     with col_c2:
         st.plotly_chart(create_waste_comparison_chart(f, m), use_container_width=True)
 
-    # 8. Per-Product Markdown History (Preserved MVP Requirement)
-    render_html('<div class="section-header">Product Markdown History</div>')
+    # 8. Operational Drill-Down Callout to Dedicated Per-Product View
     render_html(
-        '<div class="section-subtext">Inspect price trajectories, recorded markdown events, and daily inventory movements by product:</div>'
+        """
+        <div style="background-color:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:12px 18px; margin:22px 0 14px 0; display:flex; align-items:center; gap:12px;">
+            <span style="font-size:1.2rem;">🔍</span>
+            <div style="font-size:0.86rem; color:#334155;">
+                <b>Looking for SKU-level drill-down?</b> Switch to the <b>Per-Product View</b> tab above to examine individual price trajectories, clearance event histories, and 30-day stock reconciliations across all 20 perishable products.
+            </div>
+        </div>
+        """
     )
-
-    products = get_default_products()
-    prod_names = [p.name for p in products]
-
-    col_psel1, col_psel2 = st.columns([1, 2])
-    with col_psel1:
-        selected_prod_name = st.selectbox(
-            "Select Perishable Product (20 Products):",
-            options=prod_names,
-            index=0,
-            key="sim_product_select",
-        )
-    selected_prod = [p for p in products if p.name == selected_prod_name][0]
-    p_id = selected_prod.product_id
-
-    # Selected product daily records under Markdown Policy
-    p_md_df = sim_result.daily_history_df[(sim_result.daily_history_df["product_id"] == p_id) & (sim_result.daily_history_df["policy"] == "markdown")].sort_values("day")
-    p_fixed_df = sim_result.daily_history_df[(sim_result.daily_history_df["product_id"] == p_id) & (sim_result.daily_history_df["policy"] == "fixed")].sort_values("day")
-
-    p_sold_md = float(p_md_df["units_sold"].sum())
-    p_waste_md = float(p_md_df["units_wasted"].sum())
-    p_waste_fixed = float(p_fixed_df["units_wasted"].sum())
-    p_md_events_cnt = int((p_md_df["discount_pct"] > 0).sum())
-
-    with col_psel2:
-        col_pk1, col_pk2, col_pk3, col_pk4 = st.columns(4)
-        with col_pk1:
-            st.metric("Category & SKU", f"{selected_prod.category.title()}", delta=p_id)
-        with col_pk2:
-            st.metric("Base Price & Cost", f"₹{selected_prod.base_price:.2f}", delta=f"Cost ₹{selected_prod.unit_cost:.2f}")
-        with col_pk3:
-            st.metric("Base Margin (%)", f"{((selected_prod.base_price - selected_prod.unit_cost)/selected_prod.base_price*100):.1f}%", delta=f"{selected_prod.shelf_life_days}d shelf life")
-        with col_pk4:
-            st.metric("Markdown Waste", f"{p_waste_md:.1f} units", delta=f"{p_waste_md - p_waste_fixed:+.1f} vs Fixed", delta_color="inverse")
-
-    # Interactive Price Trajectory Chart
-    st.plotly_chart(create_sim_product_price_chart(p_md_df, selected_prod_name), use_container_width=True)
-    if p_md_events_cnt == 0:
-        st.info(
-            f"ℹ️ **Constant Price Trajectory**: No markdown events occurred for **{selected_prod_name}** ({p_id}) during this {sim_days}-day simulation. "
-            f"The selling price remained strictly flat at the regular catalog price of ₹{selected_prod.base_price:.2f} across all simulation days because all batches had sufficient shelf life or cleared at full price."
-        )
-    else:
-        event_days = p_md_df[p_md_df["discount_pct"] > 0]["day"].tolist()
-        days_str = ", ".join(f"Day {d}" for d in event_days)
-        st.caption(
-            f"🏷️ **Active Markdowns Applied**: Selling price dropped below base price on {len(event_days)} days ({days_str}) "
-            f"under configured clearance rules (≤ {t2}d: {d2}% | ≤ {t1}d: {d1}%)."
-        )
-
-    # Markdown Event History Table for Selected Product
-    prod_events = sim_result.markdown_events_df[sim_result.markdown_events_df["product_id"] == p_id].copy() if not sim_result.markdown_events_df.empty else pd.DataFrame()
-    with st.expander(f"📜 Recorded Markdown Events History for {selected_prod_name} ({len(prod_events)} Events)", expanded=len(prod_events) > 0):
-        if prod_events.empty:
-            st.info(
-                f"ℹ️ **No markdown events were recorded for {selected_prod_name} ({p_id})** during this {sim_days}-day simulation.\n\n"
-                f"All inventory batches for this product maintained sufficient shelf life (> {t2} days remaining) or cleared through natural customer demand at the regular price of ₹{selected_prod.base_price:.2f} without requiring promotional price reductions."
-            )
-        else:
-            evt_disp = prod_events.copy()
-            evt_disp["calculated_discount_pct"] = (
-                (evt_disp["regular_price"] - evt_disp["selling_price"]) / evt_disp["regular_price"] * 100.0
-            ).round(1)
-
-            if "available_stock" not in evt_disp.columns or evt_disp["available_stock"].isna().all() or (evt_disp["available_stock"] == 0).all():
-                p_avail_map = dict(zip(p_md_df["day"], p_md_df["units_sold"] + p_md_df["ending_stock"]))
-                evt_disp["available_stock"] = evt_disp["day"].map(p_avail_map).fillna(evt_disp["units_sold"])
-
-            evt_disp["Simulation Day"] = evt_disp["day"].apply(lambda d: f"Day {d}")
-            evt_disp["Product Name"] = selected_prod_name
-            evt_disp["SKU"] = p_id
-            evt_disp["Days to Expiry"] = evt_disp["days_until_expiry"].apply(lambda d: f"{int(d)} {'day' if int(d)==1 else 'days'}")
-            evt_disp["Regular Base Price"] = evt_disp["regular_price"].apply(lambda p: f"₹{p:.2f}")
-            evt_disp["Actual Markdown Price"] = evt_disp["selling_price"].apply(lambda p: f"₹{p:.2f}")
-            evt_disp["Discount %"] = evt_disp["calculated_discount_pct"].apply(lambda d: f"{d:.1f}%")
-            evt_disp["Available Stock"] = evt_disp["available_stock"].apply(lambda s: f"{s:,.1f} units")
-            evt_disp["Units Sold"] = evt_disp["units_sold"].apply(lambda u: f"{u:,.1f} units")
-            evt_disp["Markdown Trigger Reason"] = evt_disp["reason"]
-
-            out_cols = [
-                "Simulation Day", "Product Name", "SKU", "Days to Expiry",
-                "Regular Base Price", "Actual Markdown Price", "Discount %",
-                "Available Stock", "Units Sold", "Markdown Trigger Reason"
-            ]
-            st.dataframe(evt_disp[out_cols], use_container_width=True, hide_index=True)
-            st.caption(
-                f"✅ **Audit Trail**: Exactly {len(prod_events)} genuine clearance events recorded from simulation. "
-                f"Discount percentages strictly calculated as `(Base Price - Markdown Price) / Base Price`."
-            )
-
-    # Daily Sales, Inventory & Spoilage Ledger in Clean Expander
-    with st.expander(f"📋 Daily Sales, Inventory & Spoilage Ledger — {selected_prod_name} (30 Days)", expanded=False):
-        ledger_disp = p_md_df.copy()
-        ledger_disp["avail_stock"] = ledger_disp["units_sold"] + ledger_disp["ending_stock"]
-        ledger_disp["Simulation Day"] = ledger_disp["day"].apply(lambda d: f"Day {d}")
-        ledger_disp["Available Stock"] = ledger_disp["avail_stock"].apply(lambda s: f"{s:,.1f} units")
-        ledger_disp["Units Sold"] = ledger_disp["units_sold"].apply(lambda s: f"{s:,.1f} units")
-        ledger_disp["Units Expired / Wasted"] = ledger_disp["units_wasted"].apply(lambda w: f"{w:,.1f} units")
-        ledger_disp["Ending Stock"] = ledger_disp["ending_stock"].apply(lambda e: f"{e:,.1f} units")
-        ledger_disp["Actual Selling Price"] = ledger_disp["selling_price"].apply(lambda p: f"₹{p:.2f}")
-        ledger_disp["Markdown Status"] = ledger_disp["discount_pct"].apply(
-            lambda d: f"🔥 Markdown ({d:.0f}% Off)" if d > 0 else "Regular Full Price"
-        )
-        ledger_disp["Waste Cost"] = ledger_disp["waste_cost"].apply(lambda c: f"₹{c:.2f}" if c > 0 else "₹0.00")
-        ledger_disp["Days to Expiry"] = ledger_disp["days_until_expiry"].apply(lambda d: f"{int(d)}d")
-
-        ledger_cols = [
-            "Simulation Day", "Days to Expiry", "Available Stock", "Units Sold",
-            "Units Expired / Wasted", "Ending Stock", "Actual Selling Price",
-            "Markdown Status", "Waste Cost"
-        ]
-        st.dataframe(ledger_disp[ledger_cols], use_container_width=True, hide_index=True)
-
-        # Product-Level Inventory Reconciliation
-        arrivals_all = generate_arrival_schedule(products, sim_days=sim_days, seed=seed_val)
-        prod_batches = [b for b in arrivals_all if b.product_id == p_id]
-        tot_received = sum(b.initial_quantity for b in prod_batches)
-        end_qty = float(p_md_df.iloc[-1]["ending_stock"]) if not p_md_df.empty else 0.0
-        tot_waste_cost = float(p_md_df["waste_cost"].sum())
-        tot_revenue = float(p_md_df["revenue"].sum())
-
-        col_lr1, col_lr2, col_lr3, col_lr4 = st.columns(4)
-        with col_lr1:
-            st.metric("Total Batches Received", f"{tot_received:,.0f} units", delta=f"{len(prod_batches)} Batches Scheduled")
-        with col_lr2:
-            st.metric("Total Units Sold", f"{p_sold_md:,.1f} units", delta=f"Revenue: {format_inr(tot_revenue)}")
-        with col_lr3:
-            st.metric("Total Units Expired / Wasted", f"{p_waste_md:,.1f} units", delta=f"Waste Cost: {format_inr(tot_waste_cost)}", delta_color="inverse")
-        with col_lr4:
-            st.metric("Ending Closing Stock (Day 30)", f"{end_qty:,.1f} units", delta="Inventory Conserved ✅")
-
-        st.caption(
-            f"⚖️ **Product Inventory Conservation Identity**: {tot_received:,.1f} Total Received = "
-            f"{p_sold_md:,.1f} Sold + {p_waste_md:,.1f} Wasted + {end_qty:,.1f} Ending Inventory. "
-            f"(100% reconciled with store simulation)."
-        )
 
     # 9. Advanced Analysis & Diagnostic Tools (Encapsulated Section)
     with st.expander("🔬 Advanced Analysis & Diagnostic Tools", expanded=False):
