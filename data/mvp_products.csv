@@ -1,0 +1,21 @@
+product_id,name,category,unit,shelf_life_days,unit_cost,base_price,avg_daily_demand,price_sensitivity,arrival_interval_days,batch_order_qty
+PROD-01,Toned Fresh Milk,dairy,per litre,3,52.0,60.0,35.0,1.4,2,75
+PROD-02,Full Cream Fresh Milk,dairy,per litre,3,64.0,74.0,30.0,1.3,2,65
+PROD-03,Fresh Curd / Dahi,dairy,per 500 g pack,6,32.0,42.0,25.0,1.5,3,50
+PROD-04,Malai Paneer,dairy,per 200 g pack,5,82.0,105.0,18.0,1.6,3,40
+PROD-05,Spiced Buttermilk / Chaas,dairy,per 500 ml pouch,4,13.0,18.0,28.0,1.5,2,60
+PROD-06,White Sandwich Bread,bakery,per loaf,4,30.0,40.0,30.0,1.7,2,65
+PROD-07,Whole Wheat Atta Bread,bakery,per loaf,4,38.0,50.0,22.0,1.6,2,50
+PROD-08,Ladi Pav,bakery,per 6-piece pack,3,20.0,28.0,35.0,1.8,2,75
+PROD-09,Brioche Burger Buns,bakery,per 4-piece pack,4,30.0,42.0,18.0,1.7,2,40
+PROD-10,Garlic Herb Baguette,bakery,per loaf,3,50.0,68.0,12.0,1.9,2,28
+PROD-11,Royal Gala Apples,fruits,per kilogram,8,130.0,180.0,22.0,1.5,4,60
+PROD-12,Robusta Cavendish Bananas,fruits,per dozen,4,40.0,58.0,35.0,1.8,2,75
+PROD-13,Nagpur Mandarin Oranges,fruits,per kilogram,7,62.0,88.0,20.0,1.6,3,50
+PROD-14,Green Seedless Grapes,fruits,per 500 g pack,5,50.0,72.0,18.0,1.8,3,45
+PROD-15,Semi-Ripe Papaya,fruits,per kilogram,4,28.0,42.0,20.0,1.7,2,45
+PROD-16,Hybrid Tomatoes (Tamatar),vegetables,per kilogram,5,24.0,36.0,40.0,1.6,2,85
+PROD-17,Fresh White Cauliflower,vegetables,per head,5,24.0,36.0,25.0,1.7,3,55
+PROD-18,Baby Spinach (Palak),vegetables,per 250 g bunch,3,14.0,22.0,32.0,1.9,2,70
+PROD-19,Green Capsicum (Shimla Mirch),vegetables,per 500 g pack,5,30.0,45.0,18.0,1.6,3,45
+PROD-20,Fresh Button Mushrooms,vegetables,per 200 g pack,4,40.0,58.0,16.0,1.8,2,38

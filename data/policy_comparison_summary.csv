@@ -1,0 +1,11 @@
+Metric,Fixed-Price Policy,Markdown Policy,Difference
+Initial Inventory Received (units),14895.0,14895.0,0.0
+Units Sold,12601.3,14774.6,2173.3
+Units Wasted (Expired),1617.0,0.0,-1617.0
+Waste Rate (%),10.86%,0.00%,-10.86%
+Waste Reduction (%),0.00%,100.00%,100.00%
+Total Revenue (INR),671151.0,726303.8,55152.8
+Cost of Goods Sold - COGS (INR),494303.5,569747.2,75443.7
+Gross Margin (INR),176847.5,156556.6,-20290.9
+Gross Margin (%),26.35%,21.56%,-4.79%
+Markdown Events Recorded,0,126,126

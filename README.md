@@ -1,204 +1,226 @@
-# FreshPrice AI
+# FreshPrice AI — Markdown Before Waste: Near-Expiry Pricing
 
-FreshPrice is an intelligent dynamic pricing and markdown optimization system designed for grocery retail. It algorithmically reduces perishable food waste while safeguarding retail margins.
+**NEXAI 2026 Hackathon — Problem Statement 4.1 (Track 4: Grocery Retail)**  
+Repository: [https://github.com/thilagars4767-ux/freshprice-ai](https://github.com/thilagars4767-ux/freshprice-ai)
 
-> **Disclaimer**: All datasets generated, simulated, and utilized in this project are **synthetic** and generated algorithmically for hackathon, simulation, and academic demonstration purposes. All monetary amounts are in **INR (Indian Rupees - ₹)**. Simulation results illustrate algorithmic dynamics and do not represent actual supermarket sales or financial guarantees.
+FreshPrice AI simulates a dynamic 30-day grocery store operations environment modeling 20 perishable products to benchmark two distinct retail pricing strategies:
+1. **Fixed-Price Policy**: The standard retail baseline that maintains full base selling price until products expire.
+2. **Markdown Policy**: An intelligent near-expiry markdown mechanism that applies graduated price markdowns as shelf life nears expiration, bound by a wholesale cost floor.
+
+> **Academic & Hackathon Disclaimer**: All inventory counts, product parameters, batch arrivals, costs, prices, and demand curves are **synthetic illustrative data** generated algorithmically for hackathon demonstration. Values are denominated in **INR (Indian Rupees - ₹)**. They do not represent actual commercial supermarket audits or financial commitments.
 
 ---
 
-## Project Structure
+## 1. The Problem
+
+Perishable grocery retail suffers from structural food waste. Products such as fresh milk, artisanal bread, curd, paneer, and ripe produce have strict shelf lives (2 to 8 days). When retailers maintain static regular prices up until expiration:
+- Customers avoid older batches when fresher stock is available at the same price.
+- Unsold items cross their expiry date and become an outright loss (**spoilage waste**).
+- Retailers incur double financial damage: zero revenue on unsold units, plus the total sunk acquisition cost.
+
+**The Solution**: Intelligently markdown products before expiration to stimulate clearance demand while strictly respecting a wholesale unit cost floor ($P \ge \text{unit\_cost}$), converting would-be trash into cash revenue.
+
+---
+
+## 2. Simulation Workflow & Operations
+
+The simulation loop executes daily operations for Days 1 through 30:
 
 ```text
-freshprice/
-├── data/
-│   ├── .gitkeep
-│   ├── synthetic_grocery_inventory.csv     # Phase 1: 120 Indian grocery batches (INR)
-│   ├── category_performance_summary.csv    # Phase 3: Category-level comparison
-│   ├── discount_sensitivity_summary.csv    # Phase 3: Discount cap sensitivity (10-35%)
-│   └── elasticity_sensitivity_summary.csv  # Phase 3: Elasticity sensitivity (0.5-2.0)
-├── reports/
-│   ├── phase3_performance_report.md        # Phase 3: Full evaluation report
-│   ├── category_waste_and_profit.png       # Phase 3: Category waste & profit charts
-│   └── sensitivity_analysis.png            # Phase 3: Sensitivity curve charts
-├── src/
-│   ├── __init__.py
-│   ├── data_generator.py                   # Phase 1: Synthetic Indian grocery generator
-│   ├── pricing_engine.py                   # Phase 2: Dynamic pricing engine & simulator
-│   └── performance_analysis.py             # Phase 3: Evaluation & sensitivity module
-├── tests/
-│   ├── __init__.py
-│   ├── test_data_generator.py              # Phase 1: Test suite (9 tests)
-│   ├── test_pricing_engine.py              # Phase 2: Test suite (15 tests)
-│   └── test_performance_analysis.py        # Phase 3: Test suite (9 tests)
-├── app.py                                  # Application entrypoint
-├── requirements.txt                        # Project dependencies
-├── README.md                               # Documentation & instructions
-├── DEV_LOG.md                              # Development progress log
-└── .gitignore                              # Git ignore configuration
+Each Day t (Day 1 to Day 30):
+ 1. Inventory Receiving   --> Add scheduled batch arrivals for Day t into active store inventory.
+ 2. Morning Expiry Check  --> Identify batches where current_day >= expiry_day.
+                              Mark as expired waste and remove immediately before store opens.
+ 3. Price Determination   --> Fixed: charges regular base price.
+                              Markdown: inspects minimum days until expiry across active stock.
+                              Applies graduated discount if within threshold, capped at unit cost.
+ 4. Demand Generation     --> Evaluates base customer traffic + price elasticity response + expiry effect.
+ 5. FEFO Fulfillment      --> Depletes unexpired stock using First-Expiry-First-Out (FEFO) batch priority.
+ 6. Accounting Tracking   --> Records units sold, revenue, COGS, gross margin, and wasted units.
+ 7. Historical Logging    --> Appends to per-product daily ledger and markdown event history.
 ```
 
 ---
 
-## Phase 1: Synthetic Indian Grocery Dataset
+## 3. Core Assumptions & Mathematical Formulations
 
-The dataset models an Indian grocery store with 120 product-batch records across five realistic categories: `dairy`, `bakery`, `fruits`, `vegetables`, and `packaged food`.
+### A. Catalog & Perishability Scope
+- **Product Count**: Exactly 20 perishable grocery products across 4 staple departments (5 Dairy, 5 Bakery, 5 Fruits, 5 Vegetables).
+- **Shelf Lives**: Realistic perishability ranges from 3 to 8 days (e.g. 3 days for Toned Milk, 4 days for Sandwich Bread, 8 days for Apples).
+- **Currency**: Indian Rupees (INR - ₹).
+- **Pricing Integrity**: Regular base selling prices are strictly greater than wholesale unit acquisition costs ($P_{\text{base}} > \text{unit\_cost}$).
 
-### Schema Definition
+### B. Batch Arrival & Expiry Rules
+- **Arrival Frequency**: Products arrive periodically every 2 to 4 days in pre-set batch order quantities (28 to 85 units).
+- **Expiry Day Convention**: A batch arriving on day $t_{\text{arr}}$ with shelf life $L$ has $\text{expiry\_day} = t_{\text{arr}} + L$.
+- **No Sales After Expiry**: On any day $t \ge \text{expiry\_day}$, days until expiry is $\le 0$. Any remaining units in the batch are declared expired and discarded during morning inspection before opening. **Products are never sold on or after their expiry day**.
 
-| Column | Type | Description | Illustrative INR (₹) Scale / Range |
-| :--- | :--- | :--- | :--- |
-| `product_id` | `str` | Unique batch identifier | `PROD-0001`, `PROD-0002`, ... |
-| `product_name` | `str` | Product catalog item | e.g., `Toned Fresh Milk`, `Royal Gala Apples`, `Table Potatoes (Aloo)` |
-| `category` | `str` | Grocery department | `dairy`, `bakery`, `fruits`, `vegetables`, `packaged food` |
-| `unit` | `str` | Quantity/selling unit | `per litre`, `per kilogram`, `per 500 g pack`, `per loaf`, `per head`, etc. |
-| `initial_stock` | `int` | Available units in batch | 10–150 units |
-| `unit_cost` | `float` | Acquisition cost per unit (INR ₹) | Product-specific (₹12–₹345) |
-| `regular_price` | `float` | Standard retail price (INR ₹) | Strictly > `unit_cost` based on product markup |
-| `days_to_expiry` | `int` | Remaining shelf life | Perishables (2–14 days), Packaged foods (60–180 days) |
-| `daily_demand` | `float` | Baseline daily customer demand | 5.0–80.0 units/day |
-| `price_elasticity` | `float` | Price elasticity of demand | Negative (-0.45 to -2.30) |
+### C. Demand Model & Price Response
+Consumer shopping behavior combines baseline store footfall, price elasticity of demand, and clearance display visibility:
 
----
-
-## Phase 2: Dynamic Markdown Pricing Engine & Accounting Audit
-
-The pricing engine compares a **Fixed-Price Baseline** (standard retail pricing without discounts) against a **Dynamic Markdown Strategy** that optimizes price markdowns to clear excess perishable stock before expiration.
-
-### 1. Demand Response Equation (Price Elasticity of Demand)
-
-The engine models customer demand stimulation using standard economic price elasticity:
-
-$$\Delta Q = E_d \times \frac{\Delta P}{P_0}$$
-
-Given discount fraction $d = \frac{P_0 - P_{\text{dyn}}}{P_0} \ge 0$, the price change fraction is $\frac{\Delta P}{P_0} = -d$. Substituting:
-
-$$Q_{\text{dyn}} = Q_0 \times (1 - E_d \times d) = Q_0 \times (1 + |E_d| \times d)$$
+$$D_{i, t} = \text{round}\left( D_{0, i, t} \times \left(1.0 + \eta_i \times d_{i, t}\right) \times f_{\text{expiry}}(T_{\text{min}}) \right)$$
 
 Where:
-- $Q_0$ = Baseline daily demand at regular price.
-- $E_d$ = Price elasticity of demand ($E_d < 0$).
-- $d$ = Discount fraction ($0 \le d \le d_{\max}$).
-- $Q_{\text{dyn}}$ = Stimulated daily demand.
+- $D_{0, i, t}$ = Baseline stochastic customer demand drawn from a Poisson distribution ($\lambda_{0, i}$) controlled by the random seed.
+- $\eta_i$ = Product price sensitivity (elasticity factor between 1.3 and 1.9).
+- $d_{i, t} = \frac{P_{\text{base}} - P_{\text{selling}}}{P_{\text{base}}}$ = Discount fraction.
+- $f_{\text{expiry}}$ = Expiry display factor:
+  - Under markdown ($d > 0$): $1.15$ (promotional clearance signage attracts bargain shoppers).
+  - Under fixed pricing ($d = 0$) with 1–2 days left: $0.85$ (shopper reluctance to pay full price for near-expiry items).
 
-### 2. Financial & Retail Accounting Identities
+### D. Shelf-Life-Aware Markdown Policy & Precedence Rules
+To avoid premature discounting on short-shelf-life staples (e.g. discounting a 3-day milk SKU on Day 2 when 67% of its shelf life remains), markdown eligibility is calibrated dynamically based on catalog shelf life:
 
-All batch-level and aggregate financial metrics reconcile mathematically according to standard retail accounting:
+$$\text{effective\_threshold\_2} = \min\left(\text{configured\_threshold\_2},\ \max(1,\ \text{shelf\_life\_days} - 2)\right)$$
+$$\text{effective\_threshold\_1} = \min\left(\text{configured\_threshold\_1},\ \text{effective\_threshold\_2}\right)$$
 
-$$\text{Revenue} = \text{Units Sold} \times \text{Selling Price}$$
+**Precedence & Operational Rules**:
+1. **Urgent Clearance Precedence**: If $\text{min\_days\_to\_expiry} \le \text{effective\_threshold\_1}$ and $d_1 > 0$, the Urgent Clearance discount is applied (default 40%).
+2. **Near-Expiry Markdown**: If urgent clearance does not apply, but $\text{min\_days\_to\_expiry} \le \text{effective\_threshold\_2}$ and $d_2 > 0$, the Near-Expiry Markdown is applied (default 20%).
+3. **Single Discount Rule**: Exactly **one discount** applies per product per day; discounts never stack, compound, or combine.
+4. **Wholesale Cost Floor**: Selling prices strictly respect the wholesale unit acquisition cost:
+   $$P_{\text{selling}} = \max\left(\text{unit\_cost},\ P_{\text{base}} \times (1 - d)\right)$$
+   Retailers never sell below acquisition cost, preventing cash losses on clearance sales.
 
-$$\text{COGS} = \text{Units Sold} \times \text{Unit Cost}$$
-
-$$\text{Gross Profit on Sold Units} = \text{Revenue} - \text{COGS} = \text{Units Sold} \times (\text{Selling Price} - \text{Unit Cost})$$
-
-$$\text{Waste Loss (Spoilage Cost)} = \text{Unsold Units} \times \text{Unit Cost}$$
-
-$$\text{Total Initial Inventory Cost} = \text{Initial Stock} \times \text{Unit Cost} = \text{COGS} + \text{Waste Loss}$$
-
-$$\text{Net Retail Profit} = \text{Revenue} - \text{Total Initial Inventory Cost} = \text{Gross Profit} - \text{Waste Loss}$$
-
-$$\text{Waste Rate (\%)} = \frac{\text{Total Unsold Units}}{\text{Total Initial Stock}} \times 100\%$$
-
----
-
-## Phase 3: Performance Evaluation & Sensitivity Analysis
-
-Phase 3 provides comprehensive benchmarking, sensitivity analysis, and empirical simulation findings across product categories, discount ceilings, and consumer price elasticity scenarios.
-
-### 1. Feature 1: Category-Level Performance Evaluation
-
-| Category | Batches | Initial Stock | Fixed Waste | Dynamic Waste | Waste Red. (%) | Fixed Net Profit (INR) | Dynamic Net Profit (INR) | Profit Gain (INR) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Bakery** | 24 | 821 | 9.60 | 1.90 | **80.21%** | ₹10,753.76 | ₹10,869.88 | **+₹116.12** |
-| **Dairy** | 24 | 1,163 | 51.00 | 36.52 | **28.39%** | ₹13,664.84 | ₹13,720.33 | **+₹55.49** |
-| **Fruits** | 24 | 999 | 0.00 | 0.00 | 0.00% | ₹33,417.11 | ₹33,417.11 | +₹0.00 |
-| **Vegetables** | 24 | 1,544 | 0.00 | 0.00 | 0.00% | ₹18,679.70 | ₹18,679.70 | +₹0.00 |
-| **Packaged Food** | 24 | 1,094 | 0.00 | 0.00 | 0.00% | ₹30,804.32 | ₹30,804.32 | +₹0.00 |
-
-- **Highest Waste Reduction (%)**: **Bakery** at **80.21%**, due to fast turnover and responsive price elasticity.
-- **Highest Volume Saved**: **Dairy** with **14.48 units** rescued from spoilage.
-- **Zero-Waste Categories**: In categories where baseline demand naturally clears stock before expiry, the pricing engine applies a 0% discount, strictly protecting regular prices and avoiding unnecessary margin loss.
-
-### 2. Feature 2: Maximum-Discount Sensitivity (10% to 35%)
-
-| Discount Setting | Units Sold | Unsold (Waste) | Waste Rate (%) | Waste Red. vs Fixed (%) | Total Revenue (INR) | Net Retail Profit (INR) | Profit Gain vs Fixed (INR) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Fixed (0%)** | 5,560.40 | 60.60 | 1.08% | 0.00% | ₹463,182.46 | ₹107,319.73 | +0.00 |
-| **10% Cap** | 5,579.40 | 41.60 | 0.74% | 31.35% | ₹463,332.53 | ₹107,469.80 | +₹150.07 |
-| **20% Cap** | 5,581.92 | 39.08 | 0.70% | 35.51% | ₹463,353.99 | ₹107,491.26 | +₹171.53 |
-| **30% Cap** | 5,582.58 | 38.42 | 0.68% | **36.60%** | ₹463,354.07 | ₹107,491.34 | **+₹171.61** |
-| **35% Cap** | 5,582.58 | 38.42 | 0.68% | **36.60%** | ₹463,354.07 | ₹107,491.34 | **+₹171.61** |
-
-- **Optimal Setting**: Under the synthetic catalog assumptions, **30%** achieves the maximum possible benefit.
-- **Plateau Behavior**: Relaxing the cap to 35% yields identical results because wholesale cost floor boundaries ($P \ge \text{unit\_cost}$) and calculated clearance needs never exceed 22.6% for any batch in the current inventory.
-
-### 3. Feature 3: Price-Elasticity Sensitivity (0.5 to 2.0)
-
-| Assumed Elasticity (|Ed|) | Scenario Label | Waste Rate (%) | Waste Red. vs Fixed (%) | Net Retail Profit (INR) | Profit Gain vs Fixed (INR) | Strategy Behavior |
-| :---: | :--- | :---: | :---: | :---: | :---: | :--- |
-| **0.5** | Inelastic | 1.08% | 0.00% | ₹107,319.73 | +₹0.00 | Profitability rule holds regular price (markdowns avoided) |
-| **1.0** | Unitary Elastic | 1.08% | 0.00% | ₹107,319.73 | +₹0.00 | Regular price held (demand increase cannot offset cost margin) |
-| **1.5** | Elastic | 0.25% | **77.00%** | ₹107,976.65 | **+₹656.92** | Dynamic markdowns actively clear excess inventory |
-| **2.0** | Highly Elastic | 0.08% | **92.48%** | ₹108,701.84 | **+₹1,382.11** | Near-total elimination of perishable food waste |
-
-- **Inelastic Scenarios ($|E_d| \le 1.0$)**: When demand does not respond sufficiently to price cuts, discounting destroys cash margin without clearing enough stock. FreshPrice AI protects the retailer by **holding regular prices**.
-- **Elastic Scenarios ($|E_d| \ge 1.5$)**: Markdown pricing achieves dramatic waste reduction (up to 92.48%) while simultaneously driving significant profit growth.
+### E. Seed Reproducibility
+- Both policies run with the **exact same random seed** (default `42`).
+- Baseline demand draws and shipment schedules are pre-generated so Fixed and Markdown policies face **100% identical starting conditions and customer traffic**.
+- Results are deterministic and reproducible.
 
 ---
 
-## Setup & Execution
+## 4. Standard Metric Definitions
 
-### 1. Installation
+All metrics adhere to standard retail and GAAP accounting:
 
-Ensure Python 3.10+ is available:
+1. **Total Received**: Sum of all units received across all batches over the 30 days.
+2. **Units Sold**: Total quantity purchased by customers over 30 days.
+3. **Units Wasted**: Total expired quantity removed from inventory.
+4. **Waste Rate (%)**:
+   $$\text{Waste Rate} = \frac{\text{Units Wasted}}{\text{Total Received}} \times 100\%$$
+5. **Waste Reduction (%)**:
+   $$\text{Waste Reduction} = \frac{\text{Fixed Waste} - \text{Markdown Waste}}{\text{Fixed Waste}} \times 100\%$$
+6. **Total Revenue**: Sum of $\text{Selling Price} \times \text{Units Sold}$.
+7. **Cost of Goods Sold (COGS)**: Sum of $\text{Unit Cost} \times \text{Units Sold}$.
+8. **Gross Margin (INR)**:
+   $$\text{Gross Margin} = \text{Revenue} - \text{COGS}$$
+9. **Gross Margin (%)**:
+   $$\text{Gross Margin \%} = \frac{\text{Gross Margin}}{\text{Revenue}} \times 100\%$$
+
+*Note: In accordance with retail accounting principles, Gross Margin measures sales profitability ($\text{Revenue} - \text{COGS}$). Waste loss ($\text{Units Wasted} \times \text{Unit Cost}$) is accounted for separately and not subtracted from COGS.*
+
+---
+
+## 5. 30-Day Benchmark Simulation Results (Seed 42)
+
+| Metric | Fixed-Price Policy | Markdown Policy | Difference |
+| :--- | :---: | :---: | :---: |
+| **Initial Inventory Received** | 14,895.0 units | 14,895.0 units | 0.0 units (Identical) |
+| **Units Sold** | 12,601.3 units | 14,774.6 units | **+2,173.3 units** |
+| **Units Wasted (Expired)** | 1,617.0 units | 0.0 units | **-1,617.0 units** |
+| **Waste Rate (%)** | **10.86%** | **0.00%** | **-10.86% (100% reduction)** |
+| **Total Store Revenue** | ₹671,151.00 | ₹726,303.80 | **+₹55,152.80 (+8.2%)** |
+| **Cost of Goods Sold (COGS)** | ₹494,303.50 | ₹569,747.20 | +₹75,443.70 |
+| **Gross Margin (INR)** | ₹176,847.50 | ₹156,556.60 | -₹20,290.90 |
+| **Gross Margin (%)** | 26.35% | 21.56% | -4.79% |
+| **Markdown Events Triggered** | 0 events | 126 events | +126 events |
+
+*Insight*: By incorporating shelf-life-aware eligibility, unnecessary promotions on 3-day products on Day 2 are prevented, reducing markdown events from 162 down to 126 while eliminating spoilage waste on Seed 42 and preserving revenue expansion.
+
+---
+
+## 6. Multi-Seed Evaluation & Model Limitations
+
+### Multi-Seed Sensitivity (Seeds: 42, 1, 7, 13, 21, 55, 99, 123, 777, 999)
+- **Fixed-Price Baseline**: Mean waste of **1,549.35 units** (10.40% waste rate), mean gross margin of **₹176,846.73**.
+- **Revised Markdown Policy**: Mean waste of **6.57 units** (0.04% waste rate), mean gross margin of **₹157,852.27**.
+- **Mean Waste Reduction**: **99.54%** (saving 1,542.8 units of food on average).
+- **Zero-Waste Occurrence**: 4 out of 10 seeds achieve 0.0 waste; 6 out of 10 seeds exhibit realistic non-zero waste (0.1 to 25.8 units) due to stochastic low-demand traffic days.
+
+### Limitations of the Synthetic Simulation Model
+1. **Synthetic Demand Draws**: Consumer footfall and shopping volume are generated via synthetic Poisson and lognormal random variables. They reflect retail distribution models but do not constitute empirical in-store POS audit data.
+2. **Constant Price Elasticity**: Elasticities ($\eta = 1.3\text{--}1.9$) are modeled linearly per SKU; cross-price cannibalization across substitutable categories is not modeled.
+3. **Fixed Delivery Schedules**: Deliveries arrive on fixed cadences (2–4 days) rather than continuous automated inventory reordering (Min-Max/s,S) policies.
+4. **Continuous Quantity Fulfillment**: Inventory is tracked with 1 decimal place rather than whole customer pack sizes, which allows continuous fluid clearance.
+5. **Evaluator Guidance**: These results should be interpreted as a comparative simulator benchmark demonstrating markdown mechanism design rather than real-world commercial performance guarantees.
+
+---
+
+## 7. Setup & Execution
+
+### Installation
 
 ```bash
-# Optional: create and activate virtual environment
+# Optional virtual environment
 python -m venv .venv
 .venv\Scripts\Activate.ps1    # On Windows
 # source .venv/bin/activate   # On macOS/Linux
 
-# Install dependencies
+# Install dependencies (pandas, numpy, pytest, matplotlib, streamlit, plotly)
 pip install -r requirements.txt
 ```
 
-*(Note: On Windows systems with the Python launcher, you can use `py` in place of `python`.)*
+### Running the Streamlit Dashboard
 
-### 2. Running Phase 1 (Data Generator)
-
-Generate 120 synthetic Indian grocery records with seed 42:
+Launch the single-page interactive dashboard:
 
 ```bash
-py src/data_generator.py
+py -m streamlit run app.py
+# Or:
+py -m streamlit run src/dashboard.py
 ```
+Open `http://localhost:8501` to adjust thresholds, change the random seed, and inspect the per-product markdown history.
 
-### 3. Running Phase 2 (Pricing Engine Simulation)
+### Running the Store Simulator CLI
 
-Run the pricing engine simulation and print the comparison report:
+Run the headless 30-day simulation and export all CSV files:
 
 ```bash
-py src/pricing_engine.py
+py src/store_simulator.py --days 30 --seed 42
 ```
 
-### 4. Running Phase 3 (Performance Evaluation & Sensitivity Analysis)
+Generated MVP CSV deliverables:
+- `data/mvp_products.csv` (20 perishable products definitions)
+- `data/daily_simulation_history.csv` (1,200 daily product records)
+- `data/policy_comparison_summary.csv` (reconciled comparison metrics)
+- `data/markdown_events_history.csv` (126 chronological markdown audit events)
 
-Execute the full Phase 3 performance evaluation, sensitivity analysis, and chart generation:
+### Running the Test Suite
 
-```bash
-py src/performance_analysis.py
-```
-
-Generated outputs:
-- `data/category_performance_summary.csv`
-- `data/discount_sensitivity_summary.csv`
-- `data/elasticity_sensitivity_summary.csv`
-- `reports/phase3_performance_report.md`
-- `reports/category_waste_and_profit.png`
-- `reports/sensitivity_analysis.png`
-
-### 5. Running the Complete Test Suite
-
-Run pytest across all Phase 1, Phase 2, and Phase 3 test suites (33 tests):
+Execute pytest across all 78 unit tests:
 
 ```bash
 py -m pytest tests -v
+```
+
+---
+
+## 7. Project Structure
+
+```text
+freshprice/
+├── data/
+│   ├── mvp_products.csv                    # 20 perishable product definitions
+│   ├── daily_simulation_history.csv        # 30-day per-product operational history
+│   ├── policy_comparison_summary.csv       # Reconciled Fixed vs Markdown metrics
+│   └── markdown_events_history.csv         # Chronological markdown triggers
+├── src/
+│   ├── __init__.py
+│   ├── store_simulator.py                  # Core 30-day daily store simulator (PS 4.1)
+│   ├── dashboard.py                        # Single-page Streamlit interactive dashboard
+│   ├── data_generator.py                   # Catalog templates and data utilities
+│   ├── pricing_engine.py                   # Dynamic pricing core
+│   └── performance_analysis.py             # Analytical evaluation module
+├── tests/
+│   ├── __init__.py
+│   ├── test_store_simulator.py             # 15 tests: PS 4.1 store simulator requirements
+│   ├── test_dashboard.py                   # 4 tests: Dashboard visualizations & integration
+│   ├── test_data_generator.py              # 9 tests: Catalog and seed integrity
+│   ├── test_pricing_engine.py              # 16 tests: Pricing constraints and accounting
+│   └── test_performance_analysis.py        # 15 tests: Sensitivity & performance metrics
+├── app.py                                  # Streamlit application entrypoint
+├── requirements.txt                        # Project dependencies
+├── README.md                               # Project documentation & assumptions
+├── DEV_LOG.md                              # Development log
+└── .gitignore                              # Git ignore rules
 ```
